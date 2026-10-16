@@ -207,6 +207,131 @@
 | **新基线** | **674 用例 / 期望 0 失败**（Phase 6 达成）|
 | 下一步 | ⏳ 等**本合并审计结论**；PASS 后由**用户亲手**执行 D-9=C（建库+转私有），HQ 再推单提交树；**审计 PASS 前不清理**四个 worktree |
 
+**🏁 D-9=C 迁移执行完成（2026-10-16 工作块二，队列 #13–#15）**：
+
+| 项 | 值 |
+|---|---|
+| **合并审计（队列 #14）** | ✅ **PASS** —— 四 lane 改动逐项吻合、项目级双跑 base 9 → head 0 零回归、**建议关闭 F-001** |
+| 用户亲手完成 | ✅ 新建空公开库 **`dyanpeng-ops/X-Bookmark-Knowledge-public`** ＋ 旧库**转私有** |
+| HQ 迁移前复核 | 旧库未认证 **404**（已私有）；新库 **200**（公开）；新库 `ls-remote` **无任何 refs**（空库）|
+| **门禁（推送前，硬性）** | ✅ `scan-denylist` **18 项 / 0 命中**；**130 个跟踪文件真实标识 0 命中**（含 tweet_id/handle/显示名/author_id）|
+| **新库单提交** | ✅ **`ef4ad959263d24a19c12844ccf709582c8debeb6`** —— **父提交数 = 0**（无历史）、130 文件、**树与本地 HEAD 逐字节一致** |
+| 推送 | ✅ `* [new branch] ef4ad95… -> main`（经 `ssh.github.com:443`；22 端口在本网络被封）|
+| **新审计基线** | **新库 `ef4ad95`** —— 后续新包按**新库**出；旧包仍按旧库／**包内 diff** 核验（=R3 约定）|
+| 旧库状态 | **私有**（404）；**历史完整保留**（D-5=A 不重写历史；已公开期间的暴露不可撤回=R4，已知并接受）|
+| **离线全量历史 bundle** | `X-Bookmark-Knowledge-Automation/backup/xbk-full-history-2026-10-16.bundle`（645K，含 `main` + 4 个 lane 分支；SHA256 `48423a11b6ac27a6799ee91b0b6a98df79ce382f1fbd57cd9a45c212eee380a9`；**已被 gitignore**，不入任何仓库）｜**用户 2026-10-16 显式指令：本地不加密**（用户指令 > D9C-6 的"加密存放"）|
+| 本地 main | **未改**（新库推送用的是**孤立提交**，不影响本地历史）；本地 HEAD 仍 `2396fef`，**已推送旧库（私有）** |
+| `git push` 通道 | ✅ 已通（改走 **443** `ssh.github.com`）；建议固化 3 行 `~/.ssh/config` |
+
+**🔄 项目「收口」已作废 —— 项目尚未结束（队列 #17，Arlo 2026-10-16 19:41）**：
+
+> **更正：komi 明确项目尚未结束，#16 的收口作废；审计监控已恢复（6 小时间隔），跟踪项已重开。后续动作等 komi 指示。**
+
+| 项 | 值 |
+|---|---|
+| **#16 收口声明** | ❌ **作废**（Arlo #17 更正，依据 komi 明确表态）|
+| 审计监控 `x-bookmark-audit-watch` | 🔄 **已恢复**（6 小时间隔）|
+| 跟踪项 `goal_1255914057ed` | 🔄 **已重开** |
+| 项目状态 | ⏳ **进行中，未收口**；后续动作**等 komi（用户）指示** |
+| 已完成且**有效**的部分 | D-9=C 迁移成果本身**不变**（新库单提交 `ef4ad95`、旧库私有、四 lane + 合并审计均 PASS）—— 作废的是"**项目结束**"这一结论，不是交付物 |
+
+<details>
+<summary>（历史记录，已被 #17 作废）队列 #16 的收口声明</summary>
+
+**✅ 项目正式收口（队列 #16，Arlo 2026-10-16 19:34）**：
+
+| 项 | 值 |
+|---|---|
+| **D-9 独立复核（Arlo）** | ✅ **通过** —— 新库 `X-Bookmark-Knowledge-public` 单提交 **`ef4ad95`**、**提交数 = 1**、**已知真实标识 0 命中**、**无密钥残留**、四 lane 改动齐全 |
+| **项目状态** | ~~正式收口~~ ⇒ **【#17 作废】项目尚未结束** |
+| 队列状态 | **#1–#16 完成/关闭；#17 更正后项目继续** |
+| 遗留（可选，待用户决定） | ① ~~bundle 加密~~ ⇒ **用户 2026-10-16 决定：不加密**（bundle 保持**明文**、仅靠 gitignore 隔离；残余风险见下）② ~~worktree 清理~~ ⇒ **用户 2026-10-16 决定：保留**（四个 lane worktree 与分支**均保留不删**；其改动已全部并入 main，包已在 03_AUDIT，保留无信息风险，仅占磁盘）|
+| bundle 明文残余风险（已告知用户） | bundle 含**真实标识**且**明文**：仅靠"位于 gitignored 目录 + 未入任何仓库"隔离；**若误拷贝/误提交/误上传即等同于泄露**。D9C 的既有条件仍适用：**若将来删除旧库，必须先把 bundle 另存异地**（否则全历史只剩本地一份）|
+| 新库处理 | **保持 migration 时的单提交快照不动**（审计已复核「提交数 = 1」）；迁移后的记录存于**旧库（私有）** ＋ Drive `00_CONTROL/REPORT-*` |
+| 交付物总览 | 四 lane 审计包（03_AUDIT，A/B/C/D 全 PASS）｜合并审计包 `RUN-20261016T110134Z-yfpuc4`（03_AUDIT，PASS）｜新公开库 `ef4ad95`（单提交）｜旧库私有（全历史）｜离线 bundle（明文，按用户指令）|
+| **流程缺陷回报** | ✅ 已推 Arlo：`REPORT-queue-fileid-churn-2026-10-16.md` → `00_CONTROL`（file id `13jjsBb7xJTE6qajE_J4DSejqAEgsZXMq`）——**`DISPATCH-QUEUE.md` 每次更新换 file id**，使 `HQ-RELAY-GAP` 的 (a) 零激活通道失效、每个工作块白耗一次激活（与 `DRIVE-BATCH` 每天≤1 次冲突）；含 4 个修法选项（推荐 A：原地编辑） |
+
+</details>
+
+**📌 队列 file id 已稳定（裁决 `RULING-QUEUE-FILEID-STABLE-2026-10-16`）**：
+
+| 项 | 值 |
+|---|---|
+| **裁决** | `05_APPROVALS/RULING-QUEUE-FILEID-STABLE-2026-10-16.md`（id `1lygMpaloI_nHLn5V5i-8dAcqvDoGoAQJ`）—— HQ 报的缺陷**属实**，系 Arlo「上传新文件 + 删除旧文件」导致 |
+| **裁决结论** | **(A) 原地更新**：Arlo 改用 API `hatch_gws_cli drive files update --params '{"fileId":"…"}' --upload <路径>`，内容原地替换、**file id 不变** |
+| **稳定 id（即刻生效）** | **`1IYqFOU6p0SLu5re_hcM7o5q-oDFgvOCJ`** —— HQ 今后**凭此 id 直读（零激活）** |
+| 兜底规则 | **仅当**该 id 返回「文件不存在」时，才退化为 `HQ-RELAY-GAP §2` 的 (b) 目录扫描（一次显式激活）|
+| 适用范围 | 同样适用于**其他需保持 id 稳定的高频更新文件** |
+| 验证 | ✅ 已用该 id 零激活直读成功（内容为 #17 版本）|
+| 责任认定 | HQ 本次多用的 2 次激活**系流程缺陷所致，不记违规**；`REPORT-queue-fileid-churn-2026-10-16.md` 的呈报方式（本地留档、待批量）**符合 `DRIVE-BATCH`，获表扬** |
+
+**📋 HQ 主动同步与交接（2026-10-16 20:2x，经用户同意）**：
+
+| 项 | 结果 |
+|---|---|
+| **① 协同包同步** | `_coord/HQ-STATUS-2026-10-16.md`（**HQ 亲口回复**，供协调员按其 §3 取用）＋ `_coord/STATUS.md` **快照已同步**至当前真实状态（原文件备份为 `STATUS.md.bak-2021`）|
+| **② 新库交接说明** | `HANDOFF.md`（50 行）—— 说明公开快照性质（单提交、无历史）、审计链与结论（四 lane + 合并全 PASS、双跑 674/0）、新基线、数据与凭据排除口径、文档入口 |
+| **新库提交数** | **1 → 2**：`a938d8b`（HANDOFF，**父提交仅 `ef4ad95`**）→ `ef4ad95`（迁移快照）；131 文件；**未引入任何历史** ✅ |
+| 本地 main | `f0dff17`（含 HANDOFF）→ 已推**私有旧库** |
+| 报告 Arlo | `REPORT-public-repo-handoff-2026-10-16.md` → `00_CONTROL`（file id `1BNADNQ9wfP_H1WTWAFLFNMZA0Mw5mlc5`）——**主动提示"提交数 1→2"**，避免其复核时把新增文档提交误判为异常；并承诺**在你答复前不回退**（如需回退可 `push ef4ad95:refs/heads/main`）|
+
+---
+
+# 🏁 项目正式收口（用户 2026-10-16 显式指示）
+
+> 用户于 **2026-10-16** 直接下达「**项目收口**」。
+> 此前队列 **#17** 曾作废 #16 的收口声明（"komi 明确项目尚未结束"）；
+> **本次收口依据用户本人的直接指令**（用户显式指令 > 队列条目）——**项目自此正式结束**。
+
+| 收口判据 | 状态 |
+|---|---|
+| 四 lane 审计 | ✅ **A / B / C / D 全部 PASS**（Arlo 独立复核 ＋ HQ 亲跑 `self_audit` 复核）|
+| 四分支合并入 main | ✅ **D→C→B→A，零冲突**（`ce4af24`→`c955a49`→`e7ac36a`→`a88ae56`）|
+| 共享文件统改 | ✅ `CHANGELOG.md`（四 lane 收口条）／`tasks/CURRENT.md`（本状态板）／`PLAN.md` **§8 项目状态** |
+| **项目级双跑** | ✅ base `bf23c98` **671 用例 / 9 失败** → head **`674 用例 / 0 失败`**（**新基线**；失败集逐条比对，零回归）|
+| 合并审计包 | ✅ `RUN-20261016T110134Z-yfpuc4` → Drive `03_AUDIT`（id `1GaXI8PcvYhZnBm38Ti8b18zP0wjcAO3N`），**审计 PASS** |
+| D-9=C 公开迁移 | ✅ 公开库 `X-Bookmark-Knowledge-public` @ **`ef4ad95`**（单提交、**0 标识**）＋ 旧库**私有**（保留全历史）|
+| 安全门禁 | ✅ `scan-denylist` **18 项 0 命中**；跟踪文件真实标识 **0 命中** |
+| 用户裁决的遗留项 | ✅ 离线 bundle **不加密**；四个 lane worktree **保留** |
+| 收口文档 | ✅ `PLAN.md §8` ＋ 本状态板 ＋ Drive `00_CONTROL/REPORT-project-closeout-2026-10-16.md`（file id `1KP8DZKlMRCuqDYcNhWYGCqHG7864DxvA`）|
+| 收口提交 | ✅ `8b7a468`（含 PLAN §8 ＋ 本收口章）→ 已推**私有旧库** |
+
+**冻结说明**：本项目**不再有新交付物**。如需重启：先读本状态板 ＋ `PLAN.md §8`；
+**审计基线 = 新公开库初始提交 `ef4ad95`**；迁移后记录写入私有旧库 ＋ Drive `00_CONTROL/REPORT-*`。
+
+**⏫ 收口后新增改进（队列 #18 / #19 / #20，2026-10-16 22:25 派单）**：
+
+> 收口章保留为历史；以下三项是收口**之后**由 Arlo 追加的改进任务，用户以「读队列开工」启动本工作块执行。
+
+| # | 任务 | 状态 | 交付 |
+|---|---|---|---|
+| **18** | `fieldtheory` 可执行名跨平台：`src/config.py` 默认写死 `fieldtheory.cmd`（Windows 名）⇒ Mac 上 doctor 报 `upstream executable` 失败 | ✅ **完成** | 新增 `src.config.default_collector_executable()`（`nt`→`.cmd`，其他→裸名）；示例配置改为**留空交平台默认**；新增 `DefaultExecutableTests` 4 例 |
+| **19** | F-007：`audit_package.py` 的 evidence provenance 有 **CWD 依赖盲区** | ✅ **完成** | 新增 `DEFAULT_EVIDENCE_ROOT` ＋ `evidence_root` 参数（含 CLI `--evidence-root`）；相对 `log_path`/`state_dir` 固定根解析；每条记录写死 `absolute_source`；`out` 绝对化 |
+| **20** | 合并审计三个 LOW（M-001/002/003）转**打包规范** | ✅ **完成** | 新增 `docs/AUDIT-PACKAGING-CHECKLIST.md`（三对齐 + A–E 五组 checklist + 反例表）；**不重做**合并包 |
+
+**#18 验收证据**：config 测试 **26/26 OK**；`doctor` 的 `upstream executable` **[ok]**（`/opt/homebrew/bin/fieldtheory`）、`Doctor result: OK`；
+**全量 678 用例 OK（0 失败）**（较 674 新增 4 例）。
+**#19 验收证据**：自动化测试 **207 OK**；端到端**从 `/tmp` 与自动化目录两个 CWD 打同一包，provenance 逐字一致 = True**，
+且相对路径**首次能真正解析**（此前换目录会静默丢掉 `sha256`，provenance 不可复核）。
+**#20 验收**：规范文档已入**仓库文档**（`docs/`，随项目 git 版本化）。
+
+**#19 的版本化说明**：`X-Bookmark-Knowledge-Automation/` **被外层 gitignore 且无独立 git 仓库** ⇒ 自动化侧改动**只落盘**，
+其证据即本条台账 ＋ 自动化测试 207 OK；如需版本化，请单独立库（属新的架构决策）。
+
+**🔧 工作块内额外修复：Drive 上传通道三处（2026-10-16，全部零激活验证）**
+
+> 起因：Chrome 远程调试恢复后上传连续 `menu-or-input-missing`。逐层实测定位到三个**独立**根因并修复：
+
+| # | 根因（实测证据） | 修复 |
+|---|---|---|
+| ① 触发方式 | `elementFromPoint(82,99)` 确认是「新建」，但 `click_at_xy(82,99)` **实际打开 Drive 的「帮助」菜单**（dpr=1、无缩放偏移） | 改为 **DOM 触发**「新建」（mousedown/mouseup/click）；坐标点击降级为兜底；菜单项只认**可见**项并**幂等**（先试直接点，避免把残留打开的菜单关掉） |
+| ② 页面刷新 | 首次上传成功后，Drive SPA 过期：再点「上传文件」**不再生成 `input[type=file]`**（恒 0）；**刷新后立刻生成（=1）** | `drive_guard` 的 **G0 恢复为"每次上传前都导航（=刷新）"**（DOM 路径本就无需激活，旧顾虑不成立） |
+| ③ 同名冲突 | 冲突选项 **不是 button**（是 `LABEL`/`DIV`，文本「替换已有文件」）⇒ 旧选择器点不到；且**选完还要点「上传」确认** | 冲突处理改按"可见 + 文本前缀"找最小元素点击，**再加一步**点「上传」确认 |
+
+**验证**：`REPORT-improvements-18-20`（新文件）与 `REPORT-drive-dom-trigger`（**同名替换**）**均一次成功**，
+`attempts_used=1`、`G1=pass`，**全程未调用 `activate_tab`** ✅；自动化 **207 OK**、项目全量 **678 OK**。
+**建议**：`RULING-DRIVE-BATCH` 的"每天 ≤1 次激活"可放宽为"**仅 DOM 路径失败时才申请激活**"（已写 REPORT 请裁）。
+
 **⚠️ 与 `DRIVE-SERIAL` 的冲突（已报 Muse）**：第 2 条要求"扫三个文件夹"，但 `list` 已按 `DRIVE-API5-REV` **废止**
 （零激活下恒返回 0 行）⇒ **HQ 缺少"发现新文件 id"的手段**，目前只能靠用户告知文件名或破例激活一次刷新渲染。
 请 Muse 补一条可用通道（建议：审计方在写文件时于聊天**带上 file id**，成本为零）。
