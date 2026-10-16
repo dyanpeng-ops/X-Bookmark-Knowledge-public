@@ -71,7 +71,6 @@ JSONL_REQUIRED_KEYS: tuple[str, ...] = (
     "syncedAt",
     "conversationId",
     "language",
-    "possiblySensitive",
     "engagement",
     "media",
     "mediaObjects",
@@ -82,7 +81,22 @@ JSONL_REQUIRED_KEYS: tuple[str, ...] = (
 )
 
 # Observed only after `sync --gaps`; absent on untouched records.
-JSONL_OPTIONAL_KEYS: tuple[str, ...] = ("textExpandedAt",)
+#
+# 2026-10-16 实机复采（本机 fieldtheory 1.3.22 ＋ Firefox 会话，49 条真实记录）后扩增：
+#   * `possiblySensitive` —— **7/49 条缺失**：上游对"非敏感"记录不再下发该键
+#     ⇒ 由 REQUIRED 降为 OPTIONAL（下游本就以 `.get("possiblySensitive")` 读取，缺键即视为未标注）；
+#   * 下列键**只出现在部分记录**（回复 7 条 / 引用 5 条）⇒ OPTIONAL：
+#     `inReplyToStatusId` / `inReplyToUserId`（回复）、`quotedStatusId` / `quotedTweet`（引用）。
+#     `quotedTweet` 此前在 Phase 3 记为「形状待验证（真实样本均为 null）」，**本次首次观测到真实形状**
+#     （dict，含 authorHandle/authorName/authorProfileImageUrl/id/media/mediaObjects/postedAt/text/url）。
+JSONL_OPTIONAL_KEYS: tuple[str, ...] = (
+    "textExpandedAt",
+    "possiblySensitive",
+    "inReplyToStatusId",
+    "inReplyToUserId",
+    "quotedStatusId",
+    "quotedTweet",
+)
 
 JSONL_KEY_TYPES: Mapping[str, str] = {
     "id": "str",
@@ -107,6 +121,11 @@ JSONL_KEY_TYPES: Mapping[str, str] = {
     "ingestedVia": "str?",
     "sortIndex": "str?",
     "textExpandedAt": "str?",
+    # 2026-10-16 复采新增（见 JSONL_OPTIONAL_KEYS 上方注释）
+    "inReplyToStatusId": "str?",
+    "inReplyToUserId": "str?",
+    "quotedStatusId": "str?",
+    "quotedTweet": "dict?",
 }
 
 AUTHOR_REQUIRED_KEYS: tuple[str, ...] = ("id", "handle", "name")

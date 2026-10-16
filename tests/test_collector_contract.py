@@ -25,6 +25,8 @@ from src.collector.base import UpstreamContractError  # noqa: E402
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "upstream"
 
 # Frozen from the real capture (fieldtheory 1.3.22, 2026-09-16, 5 records).
+# 2026-10-16 复采（49 条真实记录，Firefox 会话）后同步：
+#   `possiblySensitive` 降为 optional（7/49 缺）；新增 4 个条件键（回复/引用）。
 REAL_JSONL_REQUIRED_KEYS = (
     "id",
     "tweetId",
@@ -39,7 +41,6 @@ REAL_JSONL_REQUIRED_KEYS = (
     "syncedAt",
     "conversationId",
     "language",
-    "possiblySensitive",
     "engagement",
     "media",
     "mediaObjects",
@@ -48,7 +49,14 @@ REAL_JSONL_REQUIRED_KEYS = (
     "ingestedVia",
     "sortIndex",
 )
-REAL_JSONL_OPTIONAL_KEYS = ("textExpandedAt",)
+REAL_JSONL_OPTIONAL_KEYS = (
+    "textExpandedAt",
+    "possiblySensitive",
+    "inReplyToStatusId",
+    "inReplyToUserId",
+    "quotedStatusId",
+    "quotedTweet",
+)
 
 
 def load_json(name: str):
@@ -78,6 +86,32 @@ class BookmarkRecordContractTests(unittest.TestCase):
         record = load_jsonl("bookmarks.sample.jsonl")[2]
         self.assertNotIn("textExpandedAt", record)
         contract.validate_bookmark_record(record)
+
+    def test_record_without_possibly_sensitive_still_valid(self):
+        """2026-10-16 复采：**7/49 条真实记录不含 `possiblySensitive`** ⇒ 缺该键必须仍合法。
+
+        回归自实机抓取（fieldtheory 1.3.22 起对"非敏感"记录不再下发该键）；
+        修复前该键在 REQUIRED 里，导致整份 49 条 JSONL 无法入库。
+        """
+
+        record = load_jsonl("bookmarks.sample.jsonl")[0]
+        stripped = {k: v for k, v in record.items() if k != "possiblySensitive"}
+        contract.validate_bookmark_record(stripped, "no-possiblySensitive")
+        self.assertNotIn("possiblySensitive", stripped)
+
+    def test_reply_and_quote_optional_keys_accepted(self):
+        """2026-10-16 复采：回复/引用记录新增 4 个条件键，必须被契约接受（含 `quotedTweet` dict）。"""
+
+        record = dict(load_jsonl("bookmarks.sample.jsonl")[0])
+        record.update(
+            {
+                "inReplyToStatusId": "1234567890",
+                "inReplyToUserId": "987654321",
+                "quotedStatusId": "1122334455",
+                "quotedTweet": {"id": "1122334455", "text": "quoted"},
+            }
+        )
+        contract.validate_bookmark_record(record, "reply-quote")
 
     def test_unknown_extra_key_is_ignored(self):
         record = load_jsonl("bookmarks.sample.jsonl")[0]
