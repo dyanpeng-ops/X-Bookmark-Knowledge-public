@@ -44,11 +44,17 @@ collector:
   #   · 两者暂并存；「是否把 Collector Protocol 拆分/闭合」属待裁定项 S2，
   #     选项与影响见 X-Bookmark-Knowledge-Automation/docs/PHASE5-PREP-BRIEF.md。
   provider: "fieldtheory"          # 已实现的采集源（fieldtheory@1.3.22）
-  # 本机实测（2026-09-15）：PowerShell 中直接调用 `fieldtheory` 会解析到 .ps1 shim，
+  # 本机实测（2026-09-15，Windows）：PowerShell 中直接调用 `fieldtheory` 会解析到 .ps1 shim，
   # 被 CurrentUser=RemoteSigned 执行策略拦截且无任何输出；`fieldtheory.cmd` 正常返回 1.3.22。
-  # 因此 Adapter 必须显式使用 .cmd shim 或绝对可执行路径；PowerShell 里也不要用 `ft`
+  # 因此 **Windows 上必须用 .cmd shim**（或绝对可执行路径）；PowerShell 里也不要用 `ft`
   # （那是 Format-Table 的内置别名）。
-  executable: "fieldtheory.cmd"
+  #
+  # 跨平台默认（2026-10-16）：**留空即按平台自动选** ——
+  #   Windows → `fieldtheory.cmd`   ｜ macOS / Linux → `fieldtheory`
+  # （本机实测 2026-10-16：macOS 上 `/opt/homebrew/bin/fieldtheory` 存在而 `fieldtheory.cmd` 不存在，
+  #   写死 Windows 名会让 `doctor` 的 `upstream executable` 项失败。）
+  # 仅当默认不符合本机情况（自定义绝对路径 / 用测试桩）才取消注释并显式填写。
+  # executable: "fieldtheory.cmd"
   executable_args: []              # 前置参数（一般留空；离线验收测试用它注入测试桩）
 
   # 优先级：本配置值 > 环境变量 FT_DATA_DIR > 上游默认 ~/.fieldtheory/bookmarks（ADR-013）

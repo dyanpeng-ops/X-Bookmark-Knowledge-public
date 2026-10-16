@@ -12,10 +12,13 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -23,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.config import (  # noqa: E402  (path bootstrap must run first)
     ConfigError,
+    default_collector_executable,
     default_project_root,
     load_config,
     resolve_path,
@@ -75,10 +79,13 @@ class ShippedConfigTests(ConfigTestCase):
 
     def test_example_config_collector_and_ingest_defaults(self):
         config = load_config(EXAMPLE, project_root=PROJECT_ROOT, env={})
+        # 示例配置刻意**留空** `executable`（git 里不能在 YAML 里做平台分支），
+        # 由 `src.config.default_collector_executable()` 按平台决定（任务 #18）。
+        expected_executable = default_collector_executable()
         self.assertEqual(config.collector.provider, "fieldtheory")
-        self.assertEqual(config.collector.executable, "fieldtheory.cmd")
+        self.assertEqual(config.collector.executable, expected_executable)
         self.assertEqual(config.collector.executable_args, ())
-        self.assertEqual(config.collector.command, ("fieldtheory.cmd",))
+        self.assertEqual(config.collector.command, (expected_executable,))
         self.assertTrue(config.collector.read_only)
         self.assertEqual(config.collector.auth.method, "firefox")
         self.assertEqual(config.collector.auth.browser, "firefox")
@@ -104,6 +111,33 @@ class ShippedConfigTests(ConfigTestCase):
         self.assertEqual(config.section("safety")["forbid_writes_outside_project"], True)
 
 
+class DefaultExecutableTests(unittest.TestCase):
+    """任务 #18：上游可执行名的**跨平台默认值**。"""
+
+    def test_windows_uses_cmd_shim(self):
+        """Windows 上必须选 `.cmd`（`.ps1` shim 会被 RemoteSigned 策略拦截且静默失败）。"""
+
+        self.assertEqual(default_collector_executable("nt"), "fieldtheory.cmd")
+
+    def test_posix_uses_bare_name(self):
+        """macOS / Linux 上选裸名（本机实测 `/opt/homebrew/bin/fieldtheory` 存在、`.cmd` 不存在）。"""
+
+        self.assertEqual(default_collector_executable("posix"), "fieldtheory")
+
+    def test_default_follows_current_platform(self):
+        self.assertEqual(default_collector_executable(), default_collector_executable(os.name))
+        self.assertEqual(
+            default_collector_executable(),
+            "fieldtheory.cmd" if os.name == "nt" else "fieldtheory",
+        )
+
+    def test_example_config_leaves_executable_unset(self):
+        """示例配置不得写死平台相关可执行名 —— 否则 Mac/Linux 复制示例即坏。"""
+
+        data = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+        self.assertNotIn("executable", data["collector"])
+
+
 class LoadConfigTests(ConfigTestCase):
     def test_missing_file_raises(self):
         with self.assertRaises(ConfigError) as ctx:
@@ -116,7 +150,7 @@ class LoadConfigTests(ConfigTestCase):
         )
         self.assertIsNone(config.source_path)
         self.assertEqual(config.paths.data_dir, self.tmp / "data")
-        self.assertEqual(config.collector.executable, "fieldtheory.cmd")
+        self.assertEqual(config.collector.executable, default_collector_executable())
 
     def test_relative_paths_resolve_against_project_root(self):
         path = self.write_config("version: 1\npaths:\n  raw_dir: 'custom/raw'\n")

@@ -40,6 +40,7 @@ __all__ = [
     "default_project_root",
     "load_config",
     "resolve_path",
+    "default_collector_executable",
 ]
 
 SUPPORTED_CONFIG_VERSIONS: tuple[int, ...] = (1,)
@@ -47,6 +48,25 @@ DEFAULT_CONFIG_RELATIVE_PATH = "config/config.yaml"
 EXAMPLE_CONFIG_RELATIVE_PATH = "config/config.example.yaml"
 STATE_DB_FILENAME = "state.db"
 FT_DATA_DIR_ENV = "FT_DATA_DIR"
+
+
+def default_collector_executable(platform: str | None = None) -> str:
+    """跨平台默认的上游可执行名。
+
+    * **Windows**（``os.name == 'nt'``）→ ``fieldtheory.cmd``：PowerShell 直接调用
+      ``fieldtheory`` 会解析到 ``.ps1`` shim，被 ``RemoteSigned`` 执行策略拦截且**静默失败**
+      （见 ``config/config.example.yaml`` 的实测注释）。
+    * **其他平台**（macOS / Linux）→ ``fieldtheory``：本机实测（2026-10-16）
+      ``/opt/homebrew/bin/fieldtheory`` 存在而 ``fieldtheory.cmd`` 不存在，
+      写死 Windows 名会让 ``doctor`` 的 ``upstream executable`` 项失败。
+
+    显式传入 ``platform`` 可覆盖判定（便于单元测试覆盖两个分支）。
+    """
+
+    key = os.name if platform is None else platform
+    return "fieldtheory.cmd" if key == "nt" else "fieldtheory"
+
+
 _DEFAULT_PATHS: Mapping[str, str] = {
     "data_dir": "data",
     "raw_dir": "data/raw",
@@ -463,8 +483,10 @@ def _build_collector(
     return CollectorConfig(
         provider=_as_str(section.get("provider"), "collector.provider", "fieldtheory")
         or "fieldtheory",
-        executable=_as_str(section.get("executable"), "collector.executable", "fieldtheory.cmd")
-        or "fieldtheory.cmd",
+        executable=_as_str(
+            section.get("executable"), "collector.executable", default_collector_executable()
+        )
+        or default_collector_executable(),
         executable_args=_as_str_tuple(section.get("executable_args"), "collector.executable_args"),
         upstream_data_dir=upstream_data_dir,
         read_only=_as_bool(section.get("read_only"), "collector.read_only", True),
