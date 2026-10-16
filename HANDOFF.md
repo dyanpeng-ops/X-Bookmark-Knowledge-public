@@ -43,8 +43,36 @@
 | 文件 | 内容 |
 |---|---|
 | `README.md` | 项目总览 |
-| `PLAN.md` | 阶段计划与实施计划 |
+| `PLAN.md` | 阶段计划与实施计划（§8 项目状态）|
 | `CHANGELOG.md` | 变更记录（含「[Phase 5–6 · 四 lane 收口] 2026-10-16」）|
 | `ARCHITECTURE.md` | 架构与权威路径声明（D-2 R1）|
 | `tasks/CURRENT.md` | 当前状态板（含四 lane 合并与双跑证据）|
 | `docs/SEC-01-THREAT-MODEL.md` | 安全威胁模型（D-6）|
+| `docs/AUDIT-PACKAGING-CHECKLIST.md` | 审计打包 checklist（打包三对齐）|
+
+---
+
+## 同步规则（公开库维护约定）
+
+> 来源：`RULING-PUBLIC-SYNC-AND-DISCOVERY-2026-10-16`（审计方批准）。
+
+**本公开库只接受"落在它自己历史上的新提交"。**
+
+1. **私有旧库的提交一律不得直接 push 到本库** —— 私有历史的祖先链含有迁移前提交，
+   直接推送会把整条历史（含已脱敏处理前的标识）带进公开库，`git log -S` 即可检索到。
+2. 需要同步时：**在本库自身历史（当前 tip）之上构造等价提交**（同样的文件状态，父提交 = 本库 tip），
+   而不是把私有提交搬过来。
+3. 推送前两道关：
+   - **门禁**：`scan-denylist` 18 项 **0 命中**（并建议对"待推新树"副本再扫一遍）；
+   - **核验**：`git ls-remote` 确认本库当前 tip，确认无他人提交后再 fast-forward 推送。
+4. 推送必须 **fast-forward**：**不 squash、不改写历史**。
+
+### 本库历史（保持线性、可解释）
+
+```text
+ef4ad95  初始提交 — 已脱敏当前树（单提交、无历史）
+a938d8b  docs: 新增 HANDOFF（公开快照交接说明）
+c20c23c  fix(config): 上游可执行名按平台自动选默认（队列 #18）
+24d67c2  docs(audit): 打包 checklist + 项目状态 §8 + 台账同步
+```
+
