@@ -9,6 +9,54 @@
 
 ---
 
+## [Phase 6 · 上游契约适配] 2026-10-16 — 实机抓取 44 条新书签；`possiblySensitive` 降为可选
+
+> 触发：用户指令「抓取新书签」。本机首次在 **macOS ＋ Firefox 会话**下跑通上游抓取。
+
+### Fixed
+
+- **上游 JSONL 契约与实采不符**（风险登记 `R2` 首次实际触发）：`fieldtheory 1.3.22` 对
+  「非敏感」记录**不再下发 `possiblySensitive`**（实采 **7/49** 条缺失），而 `JSONL_REQUIRED_KEYS`
+  仍将其列为必填 ⇒ 整份 49 条 JSONL 校验失败、**无法入库**。
+  现将其由必填降为**可选**（下游本就以 `.get("possiblySensitive")` 读取，缺键即视为"未标注"）。
+
+### Added
+
+- 契约登记 **4 个条件键**（实采：回复 7 条 / 引用 5 条）：
+  `inReplyToStatusId`、`inReplyToUserId`、`quotedStatusId`、`quotedTweet`（`dict?`）。
+  其中 **`quotedTweet` 此前在 Phase 3 记为「形状待验证（真实样本均为 null）」—— 本次首次观测到真实形状**
+  （含 `authorHandle`/`authorName`/`authorProfileImageUrl`/`id`/`media`/`mediaObjects`/`postedAt`/`text`/`url`）。
+- `tests/test_collector_contract.py` 新增 2 例回归：缺 `possiblySensitive` 仍合法、回复/引用新键被接受。
+
+### Changed
+
+- **接入 Canonical（用户指令「接入」）** —— 把新可观测的键真正接进数据流（此前被丢弃/写死 null）：
+  - `reply_to` ← **JSONL `inReplyToStatusId`**（父帖 tweet id）；旧实现**写死 null**，注释还写着
+    「FT 数据不携带 reply_to」（**已证伪**）。
+  - `quoted_tweet` ← **富化 `quotedTweet` → 回退 JSONL `quotedTweet`**；`_quoted_tweet()` 统一两种形状的
+    键名差异（富化 `tweetId` vs JSONL `id`）。
+  - Markdown `## thread` 段**同样支持 JSONL 回退**（此前只读富化；旧注释称"JSONL 中不携带"亦已证伪），
+    并识别 JSONL 的 `id` 键；**两处都有时以富化为准**（数据更全，优先级不变）。
+  - `thread` **仍为 null** —— 整条线程链上游确实不提供（只有单层回复/引用指针），**不臆造**。
+- `ARCHITECTURE.md` 的字段来源表已同步（`quoted_tweet` / `reply_to` / `thread` 三行）。
+
+### Decided
+
+- **不为上游改名/省略键而加严校验**：契约以**实采**为准，未知额外键继续"忽略"（既有策略不变）。
+- **已接入** `inReplyToStatusId` → `reply_to`、`quotedTweet` → `quoted_tweet`；
+  `quotedStatusId` / `inReplyToUserId` **暂仅登记不落 Canonical**（前者与 `quoted_tweet.tweet_id` 重复，
+  后者在 Schema 中无对应字段）；`thread` 维持 null。
+
+### Verified
+
+- 抓取：**5 → 49 条**（**新增 44**、unchanged 5、**failed 0**）；库状态 `COLLECTED 44 | PROCESSED 5`
+- **端到端接入验证**：canonical **7 条含 `reply_to`**、**5 条含 `quoted_tweet`**（与 JSONL 计数一致）；
+  Markdown **`writing 44` 新文件**（`knowledge/*.md` 7 → **51**），既有 5 篇**按设计拒绝覆盖**（conflicts 5、failed 0）；
+  抽查 `## thread` 段已渲染真实引用内容
+- 全量测试 **684 用例 OK**（680 ＋ 新增 4：2 契约 ＋ 2 接入）；上游 `1.3.22`（npm 最新版）行为已复现
+
+---
+
 ## [Phase 5–6 · 四 lane 收口] 2026-10-16 — D-1 / D-2 / D-3 / D-6 合并入 main
 
 > 依据：Drive `00_CONTROL/DISPATCH-QUEUE.md` #11（**四 lane 审计全部 PASS** → 执行合并）。

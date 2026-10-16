@@ -230,9 +230,9 @@ src/normalizer/
 | `text` | str | 全部 | 正文 |
 | `url` | str | 全部 | 推文 URL |
 | `conversation_id` | str | 全部 | 会话 ID |
-| `quoted_tweet` | dict \| null | fieldtheory 富化 | 被引用推文 |
-| `reply_to` | str \| null | fieldtheory 富化 | 回复目标 |
-| `thread` | list[str] \| null | fieldtheory 富化 | 线程 |
+| `quoted_tweet` | dict \| null | **富化 → JSONL `quotedTweet`**（2026-10-16 起回退）| 被引用推文（`tweet_id`/`author_handle`/`text` 必填）|
+| `reply_to` | str \| null | **JSONL `inReplyToStatusId`**（2026-10-16 接入）| 回复目标的父帖 tweet id |
+| `thread` | list[str] \| null | **无上游数据源 ⇒ 恒 null** | 整条线程链上游仍不提供（只有单层回复/引用指针）|
 | `media` | list[dict] | 全部 | 媒体对象数组 |
 | `external_links` | list[str] | 全部 | 外链 URL |
 | `x_article` | dict \| null | fieldtheory 富化 | X Article 正文 |

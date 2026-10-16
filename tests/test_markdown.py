@@ -154,6 +154,40 @@ class RenderTests(unittest.TestCase):
         self.assertIn("_无引用推文_", render(enrich=None))
         self.assertIn("_无引用推文_", render(enrich=dict(ENRICH, quotedTweet=None)))
 
+    def test_thread_section_falls_back_to_jsonl_quoted_tweet(self):
+        """2026-10-16 接入：**无富化**时也必须渲染 JSONL 自带的 `quotedTweet`。
+
+        回归：旧实现只读富化，旧注释还写着"JSONL 中不携带"——实机复采证明 **5/49 条 JSONL 携带**。
+        JSONL 形状的 tweet id 键是 `id`（非 `tweetId`），必须一并识别。
+        """
+
+        text = render(
+            {
+                "quotedTweet": {
+                    "id": "1933333333333333333",
+                    "authorHandle": "jsonl_author",
+                    "text": "来自 JSONL 的引用。",
+                }
+            },
+            enrich=None,
+        )
+        self.assertIn("## thread", text)
+        self.assertIn("@jsonl_author", text)
+        self.assertIn("`1933333333333333333`", text)
+        self.assertIn("> 来自 JSONL 的引用。", text)
+
+    def test_thread_section_prefers_enrichment_over_jsonl(self):
+        """两处都有时以**富化**为准（数据更全），不得因回退而改变既有优先级。"""
+
+        text = render(
+            {"quotedTweet": {"id": "1933333333333333999", "authorHandle": "jsonl_a", "text": "旧"}},
+            enrich=dict(ENRICH, quotedTweet={
+                "tweetId": "1900000000000000999", "authorHandle": "quoted_author", "text": "新",
+            }),
+        )
+        self.assertIn("@quoted_author", text)
+        self.assertNotIn("@jsonl_a", text)
+
     def test_ai_analysis_section_is_placeholder(self):
         text = render()
         self.assertIn("## ai_analysis", text)

@@ -352,18 +352,30 @@ def _render_section_metadata(upstream: Mapping[str, Any], enrichment: Mapping[st
     return "\n".join(lines) if lines else "_无更多元数据_"
 
 
-def _render_section_thread(enrichment: Mapping[str, Any] | None) -> str:
-    """引用推文/线程上下文（来自富化 `quotedTweet`；JSONL 中不携带）。"""
+def _render_section_thread(
+    enrichment: Mapping[str, Any] | None,
+    upstream: Mapping[str, Any] | None = None,
+) -> str:
+    """引用推文/线程上下文。
 
-    quoted = (enrichment or {}).get("quotedTweet")
+    数据源优先级（2026-10-16 起）：
+    1. **富化** ``enrichment['quotedTweet']``（`fieldtheory list|show --json`）；
+    2. **JSONL** ``upstream['quotedTweet']`` —— 旧注释称"JSONL 中不携带"，**已证伪**：
+       实机复采显示 **5/49** 条 JSONL 记录确实携带 ``quotedTweet``。
+
+    两种形状的键名不同（富化用 ``tweetId``；JSONL 用 ``id``），两者都认。
+    """
+
+    quoted = (enrichment or {}).get("quotedTweet") or (upstream or {}).get("quotedTweet")
     if not isinstance(quoted, Mapping) or not quoted:
         return "_无引用推文_"
     lines: list[str] = []
     header: list[str] = []
     if quoted.get("authorHandle"):
         header.append(f"@{_md_escape(str(quoted['authorHandle']))}")
-    if quoted.get("tweetId"):
-        header.append(f"`{str(quoted['tweetId'])}`")
+    quoted_id = quoted.get("tweetId") or quoted.get("id")
+    if quoted_id:
+        header.append(f"`{str(quoted_id)}`")
     if header:
         lines.append("- 引用：" + " ".join(header))
     text = str(quoted.get("text") or "").strip()
@@ -387,7 +399,7 @@ def _render_section_source(upstream: Mapping[str, Any]) -> str:
 
 _SECTION_RENDERERS: dict[str, Any] = {
     "tweet": lambda u, e, c: _render_section_tweet(u),
-    "thread": lambda u, e, c: _render_section_thread(e),
+    "thread": lambda u, e, c: _render_section_thread(e, u),
     "media": lambda u, e, c: _render_section_media(u, c.media_files),
     "article": lambda u, e, c: _render_section_article(e),
     "external_links": lambda u, e, c: _render_section_external_links(u, c.link_details),

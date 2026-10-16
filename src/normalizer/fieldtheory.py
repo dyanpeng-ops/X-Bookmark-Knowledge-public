@@ -251,10 +251,14 @@ class FieldTheoryNormalizer:
             ),
             "source": self.source,
             "collector": self.collector_name,
-            "quoted_tweet": self._quoted_tweet(item.enrichment),
-            # FT 数据不携带 reply_to / thread；显式写 null = 已记录的 Schema gap
-            # （Schema 中两者可空，Phase 3 不为其扩张数据源）。
-            "reply_to": None,
+            # 引用：优先富化 `quotedTweet`；**2026-10-16 起**回退到 JSONL 自带的 `quotedTweet`
+            # （实机复采 5/49 条 JSONL 确实携带 —— 旧记录"JSONL 不携带"已证伪）。
+            "quoted_tweet": self._quoted_tweet(item.enrichment, payload),
+            # 回复目标：JSONL `inReplyToStatusId`（实采 7/49 条）→ 父帖 tweet id。
+            "reply_to": _optional_str(
+                payload.get("inReplyToStatusId"), "payload['inReplyToStatusId']"
+            ),
+            # 线程链：上游仍**不提供**整条线程（只有单层回复/引用指针）⇒ 保持 null（Schema 允许）。
             "thread": None,
             "media": self._media(payload),
             "external_links": self._external_links(payload),
@@ -446,21 +450,32 @@ class FieldTheoryNormalizer:
         site = _optional_str(block.get("articleSite"), "enrichment['articleSite']")
         return {"title": title, "text": text, "site": site}
 
-    def _quoted_tweet(self, enrichment: Mapping[str, Any] | None) -> dict[str, Any] | None:
-        """quotedTweet → ``quotedTweet``（``tweetId``/``authorHandle``/``text`` 必填）。
+    def _quoted_tweet(
+        self,
+        enrichment: Mapping[str, Any] | None,
+        payload: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """quotedTweet → Canonical ``quoted_tweet``（``tweet_id``/``author_handle``/``text`` 必填）。
 
-        ⚠️ 形状**待验证**：现有真实样本（5 条）与 fixtures 中 ``quotedTweet`` 均为
-        ``null``，无实测非空样本。此处按字段名直译并严格校验；若上游实际形状不同，
-        报 ``NormalizationError`` 而不是静默丢数据（记录于 Phase 3 Review）。
+        数据源优先级（2026-10-16 起）：**富化 `quotedTweet` → JSONL `quotedTweet`**。
+        实机复采（49 条）显示 **5/49** 条 JSONL 自带 `quotedTweet`，故旧注释的
+        「JSONL 中不携带 / 形状待验证」**已证伪**；真实形状：
+
+        ``{id, authorHandle, authorName, authorProfileImageUrl, media, mediaObjects, postedAt, text, url}``
+
+        ⇒ 两种形状的键名差异（富化 ``tweetId`` vs JSONL ``id``；``authorHandle`` vs ``authorUsername``）
+        在本函数内统一；缺必填项时抛 ``NormalizationError`` 而非静默丢数据。
         """
 
         block = self._enrichment(enrichment)
         quoted = block.get("quotedTweet")
+        if quoted is None and payload is not None:
+            quoted = payload.get("quotedTweet")
         if quoted is None:
             return None
         if not isinstance(quoted, Mapping):
             raise NormalizationError(
-                f"enrichment['quotedTweet'] must be an object or null, got {type(quoted).__name__}"
+                f"quotedTweet must be an object or null, got {type(quoted).__name__}"
             )
         tweet_id = quoted.get("tweetId") or quoted.get("id")
         handle = quoted.get("authorHandle") or quoted.get("authorUsername")

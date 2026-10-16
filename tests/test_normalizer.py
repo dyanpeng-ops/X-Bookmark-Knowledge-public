@@ -148,6 +148,49 @@ class SingleBookmarkTests(NormalizerTestCase):
         for bookmark in bookmarks:
             validate_bookmark(bookmark)
 
+    def test_jsonl_quoted_tweet_and_reply_to_are_wired(self):
+        """2026-10-16 接入：**JSONL 自带**的 `quotedTweet` / `inReplyToStatusId` 进入 Canonical。
+
+        回归自实机复采：JSONL 有 5/49 条自带 `quotedTweet`、7/49 条带 `inReplyToStatusId`，
+        而旧实现把 `reply_to` 写死 null、`quoted_tweet` 只认富化（⇒ 这些数据被丢弃）。
+        JSONL 形状用 `id`（非 `tweetId`），此处以真实形状验证。
+        """
+
+        payload_obj = dict(sample_payloads()[0])
+        payload_obj["inReplyToStatusId"] = "1911111111111111111"
+        payload_obj["quotedStatusId"] = "1922222222222222222"
+        payload_obj["quotedTweet"] = {
+            "id": "1922222222222222222",
+            "authorHandle": "quoted_author",
+            "authorName": "Quoted Name",
+            "authorProfileImageUrl": "https://pbs.twimg.com/profile_images/2/y.jpg",
+            "media": [],
+            "mediaObjects": [],
+            "postedAt": "Wed Oct 01 00:00:00 +0000 2026",
+            "text": "被引用的内容。",
+            "url": "https://x.com/quoted_author/status/1922222222222222222",
+        }
+
+        bookmark = self.normalize_one(payload_obj)      # 注意：**不给富化**
+        validate_bookmark(bookmark)
+        self.assertEqual(bookmark["reply_to"], "1911111111111111111")
+        self.assertEqual(bookmark["quoted_tweet"]["tweet_id"], "1922222222222222222")
+        self.assertEqual(bookmark["quoted_tweet"]["author_handle"], "quoted_author")
+        self.assertEqual(bookmark["quoted_tweet"]["text"], "被引用的内容。")
+        self.assertEqual(
+            bookmark["quoted_tweet"]["url"],
+            "https://x.com/quoted_author/status/1922222222222222222",
+        )
+
+    def test_reply_and_quote_absent_stay_null(self):
+        """未带新键的记录不得被伪造：`reply_to` / `quoted_tweet` / `thread` 保持 null。"""
+
+        bookmark = self.normalize_one(sample_payloads()[0])
+        self.assertIsNone(bookmark["reply_to"])
+        self.assertIsNone(bookmark["quoted_tweet"])
+        # 整条线程链上游仍**不提供** ⇒ thread 恒 null（Schema 允许），不得臆造
+        self.assertIsNone(bookmark["thread"])
+
     def test_rejects_foreign_collector(self):
         with self.assertRaises(NormalizationError):
             self.normalizer.normalize(raw_data(payload(), collector="x_api"))
