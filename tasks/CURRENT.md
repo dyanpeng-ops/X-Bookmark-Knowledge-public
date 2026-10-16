@@ -327,10 +327,71 @@
 | ① 触发方式 | `elementFromPoint(82,99)` 确认是「新建」，但 `click_at_xy(82,99)` **实际打开 Drive 的「帮助」菜单**（dpr=1、无缩放偏移） | 改为 **DOM 触发**「新建」（mousedown/mouseup/click）；坐标点击降级为兜底；菜单项只认**可见**项并**幂等**（先试直接点，避免把残留打开的菜单关掉） |
 | ② 页面刷新 | 首次上传成功后，Drive SPA 过期：再点「上传文件」**不再生成 `input[type=file]`**（恒 0）；**刷新后立刻生成（=1）** | `drive_guard` 的 **G0 恢复为"每次上传前都导航（=刷新）"**（DOM 路径本就无需激活，旧顾虑不成立） |
 | ③ 同名冲突 | 冲突选项 **不是 button**（是 `LABEL`/`DIV`，文本「替换已有文件」）⇒ 旧选择器点不到；且**选完还要点「上传」确认** | 冲突处理改按"可见 + 文本前缀"找最小元素点击，**再加一步**点「上传」确认 |
+| ④ **账户槽位重定向** | 配置写 `/u/1/`，但 Google 现把它**重定向到 `/u/0/`** ⇒ 逐字比 URL 让 **G1 误报**"不在目标文件夹"（护栏正确中止，但上传被挡） | `normalize_url` 抹平 `/u/<n>`；`assert_on_folder` 增加**按 folder id 相同即视为同一落点**（更强、与槽位/路径形态无关）|
 
 **验证**：`REPORT-improvements-18-20`（新文件）与 `REPORT-drive-dom-trigger`（**同名替换**）**均一次成功**，
 `attempts_used=1`、`G1=pass`，**全程未调用 `activate_tab`** ✅；自动化 **207 OK**、项目全量 **678 OK**。
 **建议**：`RULING-DRIVE-BATCH` 的"每天 ≤1 次激活"可放宽为"**仅 DOM 路径失败时才申请激活**"（已写 REPORT 请裁）。
+
+**🔁 队列 #21（公开库同步）—— 已执行，但改用安全方法（前提两处证伪）**
+
+| 项 | 事实 |
+|---|---|
+| #21 前提①「公开库 tip 仍为 `ef4ad95`」 | ❌ 实为 **`a938d8b`**（我的 HANDOFF 提交）|
+| #21 前提②「直接 fast-forward push `64fdf00`」 | ❌ **危险**：`ef4ad95` **不是** `64fdf00` 的祖先（孤立提交），而 `64fdf00` **祖先链 86 个提交**（含 F-001 前历史）⇒ 按字面执行会**把全私有历史推上公开库** |
+| #21 前提③「落后 2 提交」 | ❌ 实为 **6 个文件** |
+| **实际做法** | 在公开库**自身历史**上新建 2 个**等价提交**：`c20c23c`（=#18 三文件）→ **`24d67c20`**（=#20 checklist ＋ `PLAN.md §8` ＋ 台账）|
+| 公开库状态 | ✅ main = **`24d67c2060a6455b39faee35c0315962ec2d7ccf`**；历史 **4 提交**（`ef4ad95`→`a938d8b`→`c20c23c`→`24d67c2`，**无私有历史**）；**树与私有 tip 逐字节一致**（132 文件）|
+| 推送方式 | ✅ **fast-forward**（`a938d8b..24d67c2`），未 squash、未改写历史 |
+| **门禁（双重）** | ✅ 标准 `scan-denylist` 0 命中 ＋ **导出待推新树**逐文件扫描（132×18）**0 命中** |
+| 回报 | ✅ `REPORT-public-sync-21-2026-10-16.md` → `00_CONTROL`（**零激活上传**）|
+| 建议常设规则（已请裁） | **公开库只接受落在它自己历史上的新提交**；私有历史提交一律不得直推，须先构造等价提交再过门禁 |
+
+**🔎 激活态核验（2026-10-16 23:2x，一次激活）** —— `00_CONTROL` 列表确认**近期 9 份 REPORT 全部落盘**，
+并补回此前上传未捕获的 `file_id`：
+
+| REPORT | file id |
+|---|---|
+| `REPORT-improvements-18-20` | `1FbnaW_CpFEENvCvimemPCTNGYLWfEZQD` |
+| `REPORT-drive-dom-trigger` | `1CQbS-s_1p_bEJi485dboQSfYI5LXnALW` |
+| `REPORT-public-sync-21` | `1cdIQ3pfq5teWnpd9TsYPp45hOk3-Wo8I` |
+| `REPORT-project-closeout` | `1KP8DZKlMRCuqDYcNhWYGCqHG7864DxvA` |
+| `REPORT-public-repo-handoff` | `1BNADNQ9wfP_H1WTWAFLFNMZA0Mw5mlc5` |
+| `REPORT-D9-push` | `1Bcq1SflGCeAzUfFHJmSHCfXxmFuZPI1` |
+| `REPORT-merge-done` | `1y1xSYnWBHdAv3OUvbJIFarGwTdXH1ldr` |
+| `REPORT-merge-progress` | `1KgYcaIFwpxBOMcMDA0_gFIHB9-kxN9Gv` |
+| `REPORT-queue-fileid-churn` | `13jjsBb7xJTE6qajE_J4DSejqAEgsZXMq` |
+
+**队列稳定 id 复核**：`DISPATCH-QUEUE.md` 仍为 **`1IYqFOU6p0SLu5re_hcM7o5q-oDFgvOCJ`**（裁决后的**原地更新有效** ✅）；队列最新条目 **#21**（无 #22）。
+
+**⚖️ 裁决 `RULING-PUBLIC-SYNC-AND-DISCOVERY-2026-10-16`（队列 #22，Arlo 23:27）已执行**：
+
+| 项 | 裁决内容 | HQ 动作 |
+|---|---|---|
+| ① #21 复核 | **HQ 的纠正正确**；派单三处前提**全部不成立**，**责任在 Arlo**（未先核验公开库 tip 与祖先关系）；公开库经 Arlo 独立核验：`24d67c2`、4 提交链干净、无私有历史 | 已记（HQ 纠正**记功**）✅ |
+| ② **常设规则（批准）** | **公开库只接受落在它自己历史上的新提交**；私有历史提交一律不得直推；同步须构造等价提交 → `scan-denylist` 门禁 → `ls-remote` 核验 tip → **fast-forward** 推送 | ✅ **已写进 `HANDOFF.md`**：私有 `1be4478` ／ 公开 `76617b9` |
+| ③ **发现通道（补齐）** | Arlo 今后**每写一个 Drive 文件都在聊天带一行 `完成：<文件夹>/<文件名>，id=<完整 file id>`** —— `HQ-RELAY-GAP` (a) 通道**扩展到一切文件类型**（队列更新 / REPORT / RULING …）| ✅ 已记：HQ 凭 id **零激活直读**；`(b)` 目录扫描**不再作为常规手段** |
+| ④ 队列确认 | #21 为当前最新，无 #23 | ✅ 已复核 |
+
+**公开库当前状态**：main = **`76617b93d813f5412b5e22a8b3015477a2ec172d`**（**5 提交，全部公开库原生**，无任何私有历史）；
+本次推送前置条件全部满足：`ls-remote` 核验 tip（仍为 `24d67c2`）→ 双重门禁 **0 命中**（132 文件 × 18 项 ＋ 标准扫描）→ **fast-forward**。
+
+---
+
+## 📥 抓取新书签 ＋ 接入（2026-10-16 工作块三，用户指令）
+
+| 项 | 结果 |
+|---|---|
+| **抓取** | ✅ **5 → 49 条**（**新增 44**、unchanged 5、**failed 0**）；本机**首次在 macOS ＋ Firefox 会话**跑通上游（`fieldtheory 1.3.22`）|
+| 前置阻塞（已解） | Firefox 未安装 ⇒ 用户安装并登录后通路打开（Chrome 155 v20 AE 无法解密，npm 最新版仍为 1.3.22）|
+| **契约阻塞（已修，提交 `924493d`）** | 上游对"非敏感"记录**不再下发 `possiblySensitive`**（实采 **7/49**）⇒ 整份校验失败；已由**必填降为可选**，并登记 4 个条件键（回复 7 / 引用 5），其中 **`quotedTweet` 首次观测到真实形状** |
+| **接入（已修，提交 `7115ac3`）** | `reply_to` ← JSONL `inReplyToStatusId`；`quoted_tweet` ← 富化 → **回退 JSONL**；Markdown `## thread` 同样支持回退（识别 JSONL 的 `id` 键）；**`thread` 维持 null**（上游不提供整链，不臆造）|
+| **管线 A→B→C** | `normalize --apply` **49 条**（0 失败）→ `process` **written 44**（conflicts 5 = 既有按设计拒绝覆盖，failed 0）→ `rebuild-index --apply` **49 条入索引**（旧库已备份）|
+| **知识库** | `knowledge/**/*.md`：**7 → 51 篇** ✅ |
+| **端到端验证** | canonical **7 条 `reply_to`**、**5 条 `quoted_tweet`**（与 JSONL 计数一致）；抽查 `## thread` 段已渲染真实引用 |
+| 测试 | 全量 **684 用例 OK**（680 ＋ 4 新：2 契约 ＋ 2 接入）|
+| 本次提交 | `924493d`（契约）→ `7115ac3`（接入）→ 本台账 |
+| 待 Arlo 审批 | 契约降级、接入映射、**写入 `knowledge/` 44 篇**、公开库同步（领先 3 提交）|
 
 **⚠️ 与 `DRIVE-SERIAL` 的冲突（已报 Muse）**：第 2 条要求"扫三个文件夹"，但 `list` 已按 `DRIVE-API5-REV` **废止**
 （零激活下恒返回 0 行）⇒ **HQ 缺少"发现新文件 id"的手段**，目前只能靠用户告知文件名或破例激活一次刷新渲染。
