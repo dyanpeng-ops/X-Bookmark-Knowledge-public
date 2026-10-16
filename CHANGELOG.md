@@ -1,0 +1,1116 @@
+# CHANGELOG
+
+本项目遵循"每个 Phase 一条记录"的约定。格式：
+
+```text
+## [Phase N] YYYY-MM-DD — 名称
+### Added / Changed / Fixed / Decided / Deferred
+```
+
+---
+
+## [Phase 5–6 · 四 lane 收口] 2026-10-16 — D-1 / D-2 / D-3 / D-6 合并入 main
+
+> 依据：Drive `00_CONTROL/DISPATCH-QUEUE.md` #11（**四 lane 审计全部 PASS** → 执行合并）。
+> 合并顺序 **D → C → B → A**；合并后**项目级 base-vs-head 同环境双跑：0 失败**（新基线）。
+
+### Added
+
+- `docs/SEC-01-THREAT-MODEL.md`（451 行）—— D-6 SEC-01：威胁模型（资产 A1–A7、攻击者能力、T1–T4 与缺口 G1-1…G4-8，逐条代码锚点）、
+  方案比较（15 方案，含代价/覆盖度/误伤率）、测试计划（32 用例）、待验证清单（**仅文档，零产品代码**）
+- `docs/D2-R1-AUTHORITY-AND-CALLERS.md` —— D-2 R1 权威路径声明与旧模块调用方盘点
+- `docs/RULING-LANE-C-D2-R1-2026-10-15.md` —— Lane C 裁决原件留档
+- `FieldTheoryCollector` 补齐 `Collector` Protocol 的 `sync()` / `read_bookmarks()`（**真实薄委托**，非空操作/伪造成功）；
+  新增 `ProtocolClosureTests`（3 用例）
+
+### Changed
+
+- `tests/`：**清零 9 个平台语义失败**（A 类路径软链 5 处、B 类 basename 2 处、C 类盘符 3 处）；
+  C 类的 **win32 断言原样保留**（未降强度），POSIX 分支为等价断言，并补 `mock.patch("os.path.relpath")`
+  **强制覆盖**跨盘符回退分支
+- `ARCHITECTURE.md` / `PLAN.md` / `tasks/PHASE-5-CLI.md` / `config/config.example.yaml`：
+  D-2 R1 收口结论 —— **Canonical 为权威路径**；旧模块为「**在役兼容层**」（仍在依赖中，Phase 7 解耦后方可退役）
+- `src/cli/main.py`：仅装配处**注释**（**零业务逻辑改动**）
+
+### Verified
+
+- **项目级 base-vs-head 双跑（同环境、逐条比对失败集）**：
+  base `bf23c98` **671 用例 / 9 失败** → head `a88ae56` **674 用例 / 0 失败 / exit 0**；
+  9 条失败**全部消除**，+3 为 Lane A 新增 Protocol 用例
+- 四份 lane 审计包经 HQ 亲跑 `pipeline.self_audit.audit_run` ＋ **18 项拒绝清单**复核：**A / B / C / D 全部 PASS**
+- 证据：`X-Bookmark-Knowledge-Automation/logs/merge-baseline/{base,head}-full-verbose.log`、
+  `{base,head}-failures.txt`、`{base,head}-commit.txt`
+
+### Decided
+
+- **新基线 = 674 用例 / 期望 0 失败**（Phase 6 的"干净基线"目标达成）；`skipped=1` 为环境性跳过（修复前即存在，非新增）
+- **D-4**（`.gitignore`）**无限期暂缓**；**D-9=C** 迁移待合并审计 PASS 后由用户亲手执行
+
+---
+
+## [安全] 2026-10-14 — 清除测试夹具中的真实账号 id（审计 F-001）
+
+### Fixed
+
+- `tests/test_normalizer.py`：`test_display_name_and_handle_mapped` 的 fixture（`author.id`）与断言中的
+  **真实 X 账号 id** 替换为已在全套测试中通用、且经三方核验的合成值 `100000001`
+  （核验：不在拒绝清单、不在真实上游数据、不在项目树/自动化树的其它位置）。
+  该值自 phase5 首包起被审计连续多轮指出（F-001 · MEDIUM · UNRESOLVED），本轮一次处置完毕。
+
+### 说明（自动化侧，不入本项目 Git）
+
+- 根因是**拒绝清单缺 `author_id` 类别**（原清单 13 项 = 5 个 tweet_id + 8 个 handle/name，
+  只由 `bookmarks.jsonl` 的 tweetId/handle/name 派生）⇒ 该类泄漏无法被例行扫描发现。
+  现已补入 5 个真实 `author.id`（清单 13 → 18 项）。
+- 收到的 4 份 Muse 审计报告正文引用了该标识（用于说明缺陷）⇒ 已**就地脱敏**为 `<redacted>`
+  （正文、`acceptance_checks`、`findings` 与结论完整保留），并按约定登记
+  `state/_quarantine/QUARANTINE-LOG.json`。
+- 验证：`scripts/scan-denylist` 全树扫描 **0 命中**（18 个拒绝项 / 2 个根目录 / 文本+二进制）；
+  项目全量 **671 用例 / 9 失败**，失败集与修复前**逐条一致**（零回归；9 条为已知平台语义失败）。
+
+---
+
+## [Phase 4 · 跨平台改造] 2026-10-09 — Storage（**进行中**，Step 1/5 完成）
+
+> 状态：**实施中**。任务书 `tasks/PHASE-4-STORAGE.md`（含 5 个 Step 与验收 A–H）。
+> 目标：CanonicalBookmark → 三种地位对等的投影（Markdown / JSON / SQLite 索引）+ `rebuild-index`。
+
+### Added
+
+- `src/storage/`（新增包，ARCHITECTURE §13 指定位置）+ `src/storage/json_projection.py`
+  —— **Step 1：Canonical JSON 投影**，落盘 `data/normalized/{tweet_id}.json`：
+  - 写盘前强制 `validate_bookmark`，保证磁盘内容永远合法；
+  - **原子写**（同目录临时文件 → `fsync` → `os.replace`），异常时清理临时文件，不留半截 JSON；
+  - **幂等**：目标文件 `content_hash` 未变则**不重写**（mtime 不变），服务于跨设备同步；
+  - **路径穿越防护**：`tweet_id` 来自不可信上游，拒绝路径分隔符 / NUL / 首字符 `.` / 前后空白；
+  - **单条失败隔离**（AGENTS §2.7）：批量入口 `write_all_canonical_json` 逐条 try/except，
+    返回 `JsonProjectionReport`（成功明细 + 失败清单），单条坏数据不中断整批；
+  - 序列化确定性（`ensure_ascii=False` / `sort_keys=True` / 固定缩进 + 结尾换行）。
+- `tests/test_storage_json.py` —— **24 用例**：路径布局、原子写、幂等、损坏文件重写、
+  非法 Canonical 拒绝、危险 `tweet_id` 拒绝、批量隔离、`os.replace` 失败不留残留。
+
+### Decided
+
+- **待用户决策 R1**：新建 `src/storage/` 与既有 `src/ingest` / `src/markdown` / `src/database`
+  **并存**（增量演进，不破坏既有 500+ 测试）还是**原地替换**（更干净但会大面积破坏既有测试）。
+  ARCHITECTURE §14 定义为「移 + 改」，未规定顺序与回滚方式 → 属架构取舍，开发方不自行决定。
+
+### Verified
+
+- `tests.test_storage_json`：24/24 绿；变异测试 2/2 被捕获（幂等读哈希失效 → 2 失败；路径安全失效 → 15 失败）。
+- 端到端（真实数据**只读**、落盘临时目录）：5 条 JSONL → 规范化 5/5 → 落盘 5/5；
+  **二次运行 0 写 / 5 跳过**（幂等实证）；样例 19 键、`content_hash` 与 Phase 3 验收一致。
+- 全量回归：**556 用例 / 9 失败**，失败集与上一轮**逐条一致**（平台语义，归 Phase 6）→ 零新增回归。
+- 未写真实 `data/`、`knowledge/`；未联网；无新增第三方依赖。
+
+---
+
+## [Phase 5 · 鲁棒性] 2026-10-10 — 损坏索引库的领域错误 + Drive 调用有界重试
+
+### Fixed
+
+- `src/storage/rebuild.py`：目标索引库若是**非 SQLite/已损坏文件**，先前会把 `sqlite3.DatabaseError`
+  原样抛给调用方（用户看到的是底层异常）。现统一转为 `RebuildError` 并给出可操作提示
+  （先备份或换 `--db`），且**不静默销毁用户文件**。
+  实现要点：**SQLite 是惰性的** —— `connect()` 打开垃圾文件不会报错，首次读表才报，
+  因此把「打开 + 全部读写」一起纳入转换（而不是只包住 `connect`）。
+  另：整库重建（非 `--in-place`）本就会先备份并替换旧库，此路径主要保护 `--in-place`。
+
+### Added（自动化侧）
+
+- `pipeline/drive_browser.run_harness_script`：新增**有界重试**（默认 3 次尝试、退避 1s/2s），
+  仅对**瞬时**失败（超时、含 `timed out`/`_IPCResponseTimeout`/`daemon`/`connection`/
+  `permission-blocked` 特征的非零退出）重试；**本地可执行文件缺失（OSError）不重试**。
+  动机：本会话实测两次 `Page.navigate timed out after 5s waiting for the daemon`，一次性失败会中断整条上传。
+
+### Verified
+
+- 项目：`tests.test_storage_rebuild` **25/25**（新增损坏库用例 + 整库重建语义对照用例）；
+  全量 **663 用例**，失败集与改动前逐条比对：新增 0 / 消失 0 → 零回归。
+- 流水线：**150 用例**（新增 7 个重试用例）。
+- 变异：项目区 **9/9**、自动化区 **2/2** 被捕获
+  （新增「损坏库不转领域错误 → 捕获 3 个」与「瞬时失败不再重试 → 捕获 3 个」）。
+
+### Noted
+
+- 该损坏库用例最初写错了前提（用整库重建路径去触发"打开损坏库"）：**测试教会了我语义** ——
+  整库重建会先删旧库，只有 `--in-place` 才真的打开既有库。已改为 in-place 触发，
+  并补一条"整库重建应能替换损坏库且保留备份"的对照用例。
+
+---
+
+## [Phase 4/5 · 鲁棒性] 2026-10-10 — 原子写的**崩溃安全**测试（此前完全未覆盖）
+
+### Added
+
+- `tests/test_storage_atomicity.py`：**7 个用例**，在目标函数内部注入失败，逐条验证原子写的三项不变式：
+  - `os.replace` 失败（模拟磁盘满/权限）→ 目标**不存在**，且**不留临时文件**；
+  - `os.fsync` 失败 → 同上；
+  - 覆盖写失败时**既有文件内容完整保留**（仍是旧版本，不是半截新内容）；
+  - 批量入口：**一条写入失败不影响其它条目**（AGENTS §2.7），失败进 `failures` 而非中断整批。
+  覆盖 `write_canonical_json` / `write_all_canonical_json` / `write_markdown`（含 `overwrite=True` 路径）。
+
+### Verified
+
+- `tests.test_storage_atomicity`：**7/7 绿**。
+- **变异验证确认测试有牙齿**：① 让失败后不清理临时文件（`os.unlink` 失效）→ **14 个用例失败**；
+  ② 把原子写改成直接写目标文件 → **4 个用例失败**。项目区变异合计 **8/8 被捕获**。
+- 全量：**661 用例**（+7）；失败集与改动前逐条比对：新增 0 / 消失 0 → 零回归。
+
+### Noted
+
+- 本轮尝试用 stdlib `trace` 度量 `src/storage`、`src/database` 的覆盖，但手写"可执行行"过滤会
+  把 docstring 误判为未覆盖，数字不可靠 —— 故改为针对**具体鲁棒性属性**（原子写崩溃安全）补测，
+  而非追逐覆盖率百分比。该工具经验已记录，不再产出误导性覆盖数字。
+
+---
+
+## [Phase 5 · 契约] 2026-10-10 — `status --json` 机器可读契约冻结
+
+### Added
+
+- `tests/test_cli_json_contract.py`：**8 个契约用例**，冻结 `status --json` 的对外形状：
+  顶层键集合（`config`/`database`/`upstream`/`canonical`）、各分区必需键与类型、
+  `canonical.pipeline` 的取值、以及「normalized 目录缺失 / 存在」两种情形下的稳定性，
+  并断言 `--json` **只输出 JSON**（不夹带人类可读文本）。
+  动因：该载荷会被 Phase 8 与外部集成消费，**键改名/删除会静默破坏消费者**，
+  而此前测试只断言了其中少数几个键。
+
+### Changed
+
+- `src/cli/main.py`：把 `status --json` 的 `canonical` 分区提取为 `_canonical_status()`。
+  这不是功能变更，而是让**变异测试**能真正作用到"契约是否被断言保护"这件事上
+  （提取后新增变异「分区缺少 pipeline 键」→ 被捕获）。
+
+### Verified
+
+- 新契约用例 **8/8 绿**；全量 **671 用例**（+8），失败集与基线**逐条一致**
+  （失败集 md5 仍为 `31571afa1164be8c7fda267cf6e53641`）。
+- 项目区变异 **10/10** 被捕获（新增「canonical 分区缺少 pipeline 键」→ 捕获 2 个用例）。
+- 注意：冻结集最初按**印象**写成 `path` 等键，与真实载荷不符 —— **被契约测试当场纠正**
+  （真实为 `counts`/`schema`/`total`/`links`/`last_synced_at`），这正是契约测试的价值。
+
+---
+
+## [Phase 5 · 证据质量] 2026-10-10 — CLI 级 A1 回归 + 证据日志改 verbose
+
+### Added
+
+- `tests/test_cli_canonical.py`：新增 **CLI 级 A1 回归**用例
+  `test_non_utf8_enrichment_snapshot_does_not_break_batch` —— 把一条富化快照写成非 UTF-8，
+  断言 `normalize --apply` 仍 **exit 0**、上游**全部条目**照常落盘、且报告**如实给出「富化警告 1」**。
+  补齐了 A1（审计发现：单条快照编码错误曾拖垮整批，违反 AGENTS §2.7）在**CLI 全链路**上的覆盖，
+  此前只有 Collector 层的单测。
+
+### Changed（流程）
+
+- **证据日志改为 verbose**：审计第 12 轮指出「`pipeline-tests.log` 仅含尾部摘要（`Ran N tests OK`），
+  未列出用例名，无法核对新增用例是否真的执行」。此后出包所附日志一律用 `-v` 运行，
+  日志中可逐条看到用例名与结果。
+- `EVIDENCE-CONVENTIONS.md` 同步记录该要求（含本节）。
+
+### Verified
+
+- `tests.test_cli_canonical`：**18/18 绿**（新增 1 个 CLI 级 A1 用例）。
+- 全量：**654 用例**；失败集与改动前逐条比对：新增 0 / 消失 0 → 零回归。
+
+---
+
+## [Phase 5 · CLI 安全与验收] 2026-10-10 — `rebuild-index --db` 覆盖 + 真实数据 CLI 验收
+
+### Added
+
+- `src/cli/main.py`：`rebuild-index` 新增 **`--db`** 覆盖参数（与 `--normalized-dir` / `--raw-dir`
+  一致）。动因：此前 `--apply` 只能写配置里的真实 `data/state/state.db`，
+  **无法在临时库上验收**；有了 `--db` 才能在不碰真实数据的前提下跑通 `--apply` 全链路。
+- 自动化侧 `scripts/cli-realdata-acceptance`：**真实数据 CLI 级验收**（与库级 `step5-dryrun` 互补）。
+
+### Verified（真实数据 CLI 验收，10/10 通过）
+
+用**临时配置**（输入指向真实 `data/upstream`、`data/raw`；所有可写路径指向临时目录）执行：
+
+| 步骤 | 结果 |
+|---|---|
+| `normalize`（演练） | exit 0，canonical 5 条 |
+| `normalize --apply`（临时目录） | 写出 5 个 Canonical JSON |
+| `render`（演练） | exit 0，且**未创建**知识库目录 |
+| `render --apply`（临时目录） | 5 个 Markdown |
+| `rebuild-index`（演练） | exit 0，且**未创建**数据库 |
+| `rebuild-index --apply --db <临时库>` | inserted=5 |
+| 三处 tweet_id 集合一致 | json=5 md=5 db=5 |
+| `status --json` / `doctor`（只读） | 均正常输出（doctor 含新检查项）|
+| 真实 `data/`、`knowledge/` 指纹 | **前后未变** |
+
+### Noted
+
+- 实测发现：直接用**真实配置**跑 CLI 会在真实 `data/` 下**新建当日日志文件**并触碰 `state.db` 的
+  mtime（正常产品行为）。因此"零写入"验收必须走临时配置——本脚本已如此实现。
+- `doctor` 在本机 macOS 因上游 `fieldtheory.cmd` 不在 PATH 而 FAILED（**环境事实**，非缺陷）；
+  验收中记录该退出码并说明。
+
+---
+
+## [Phase 5 · 任务书] 2026-10-10 — 新增 `tasks/PHASE-5-CLI.md`
+
+### Added
+
+- `tasks/PHASE-5-CLI.md`：Phase 5 的任务边界与验收标准，供每个审计包附作 `TASK.md`
+  （协议 §2 第 1 项）。内容：目标、已交付命令（含 `normalize`/`render`/`rebuild-index`/
+  `status`/`doctor`）与各自**默认演练**语义、待裁定后才能做的两项（S2/R1）、
+  7 条验收标准（A1–A7）、明确不在范围、待裁定清单。
+
+动因：第 10/12 轮审计均指出「包内缺 `TASK.md`（协议 §2 第 1 项）」——此前 Phase 5 没有任务书，
+只能用 `ACCEPTANCE.md` + `change-summary.md` 代偿。此文件补上该缺口。
+
+### Noted
+
+- 同批（自动化侧）新增 `scripts/mutation-check`：把"变异 N/N 被捕获"变成**可随包附上的日志**
+  （第 10/12 轮审计均指出该断言无日志可复核）。实测 project 5/5 + automation 1/1 = **6/6 被捕获**。
+
+---
+
+## [Phase 5 · 可观测性补全] 2026-10-10 — `doctor` 检查 Canonical 目录 + 打包期证据新鲜度硬护栏
+
+### Added
+
+- `src/cli/main.py`：`doctor` 新增**非关键**检查项 `canonical normalized` —— 报告
+  `<data_dir>/normalized` 是否存在及 JSON 数量；缺失时提示「先跑 `normalize --apply`（演练不会创建）」。
+  非关键 ⇒ **不影响退出码**，不会让 `doctor` 因尚未规范化而失败。
+- `X-Bookmark-Knowledge-Automation/pipeline/audit_package.py`（自动化侧）：新增
+  `--require-fresh-evidence` **硬护栏** —— 只要证据日志出现 `stale` / `undeclared` /
+  `unverifiable` / `reused` 就**拒绝出包**（此前只记录不拦截，F-006 的修复只做到"可见"）。
+
+### Fixed
+
+- `audit_evidence_provenance()` 的状态判定缺陷（**由本轮新测试抓到**）：未声明包内 `head_commit`
+  （包未用 git range）时，原先会把"已声明 commit"直接标为 `matches_head` —— 等于**谎报了一个
+  无法验证的匹配**。现新增 `unverifiable` 状态：无 head 可对照时如实标注，并由硬护栏拒绝出包。
+
+### Verified
+
+- `tests.test_cli_canonical`：**17/17 绿**（新增 2 个 doctor 用例）；既有 `tests.test_cli.DoctorCommandTests`：3/3 绿。
+- 流水线：**127/127 绿**（新增 3 个护栏用例，含"无 head 必须拒绝"与"有真实 head 时通过"）。
+- 全量：**652 用例**；失败集与改动前日志逐条比对：新增 0 / 消失 0 → 零回归。
+- 变异验证：把 `doctor` 的 normalized 计数恒置 0 → 用例捕获。
+
+---
+
+## [Phase 5 · 文档与可观测性] 2026-10-10 — README/配置示例修正 + `status` 报告 Canonical 现状
+
+### Changed
+
+- `README.md`：
+  - 修正过时现状描述：Python **3.12.13 → 3.13.12**；删去「项目**没有** `pyproject.toml`」
+    （Phase 5 起已存在），补「`xbk` 入口需 `pip install -e .` 才生效、未安装时用 `python -m src.cli`」；
+  - 「流水线顺序」新增 **Canonical 流水线**小节：`normalize --apply` / `render --apply` /
+    `rebuild-index --apply`，并写明**默认均为演练**、`render` 内容不同不覆盖（AGENTS §14）、
+    `rebuild-index` 的「运行态重建即重置」语义（R6）。
+- `config/config.example.yaml`：`collector` 段落原先只提到 Windows 时代的
+  `src/collector/fieldtheory_adapter.py`；现如实区分两套模块
+  （上游 CLI 适配器 vs Canonical 收集器 `src/collector/fieldtheory/adapter.py`），
+  并标注「是否拆分/闭合 Collector Protocol」属待裁定项 **S2**（附决策简报路径）。
+
+### Added
+
+- `status`（`--json` 与人类可读两种输出）新增 `canonical` 段：报告
+  `normalized_dir`、`normalized_files` 数量与流水线命令名；**只读，不写盘**。
+- `tests/test_cli_canonical.py`：新增 3 用例（无文件时为 0 / 计入既有 normalized JSON / 人类可读含 canonical）。
+
+### Verified
+
+- `tests.test_cli_canonical`：**15/15 绿**；`tests.test_cli`（既有）：**14/14 绿**。
+- 全量：**650 用例**；失败集与改动前日志**逐条比对：新增 0 / 消失 0** → 零回归。
+- 变异验证：把 `status` 的 normalized 计数恒置 0 → 用例捕获。
+
+---
+
+## [Phase 5 · 起步] 2026-10-10 — CLI 规范化入口（决策无关部分）
+
+> 说明：Phase 5 的**完整范围**取决于待裁定项 **S2**（Collector Protocol 拆分）与
+> **R1**（新旧模块并存/替换），见 `X-Bookmark-Knowledge-Automation/docs/PHASE5-PREP-BRIEF.md`。
+> 本次只交付**不依赖这两项决策**的部分，且全部默认 dry-run，未触碰真实数据。
+
+### Added
+
+- `src/cli/main.py` 新增两个子命令：
+  - **`normalize`**：上游 `bookmarks.jsonl`（+ `data/raw/` 富化）→ Canonical 校验 →
+    `data/normalized/{tweet_id}.json`（原子写 + `content_hash` 幂等）。
+    **默认只演练**（不创建/不修改任何文件），`--apply` 才落盘；支持 `--limit`、
+    可覆盖 `--upstream-dir/--raw-dir/--normalized-dir`。
+  - **`render`**：`data/normalized/*.json` → `knowledge/X-Bookmarks/{YYYY}/{MM}/{YYYYMMDD}-{tweet_id}.md`。
+    **内容不同则不覆盖**（AGENTS §14）：相同跳过、不同记为冲突且原文件不变，仅 `--overwrite` 改写；
+    **默认只演练**，`--apply` 才落盘。
+- `pyproject.toml`：声明 `xbk` 入口（`[project.scripts] xbk = "src.cli.main:main"`，决策 D4）。
+  **需 `pip install -e .` 才生效**（安装动作未执行）；未安装时仍用 `python -m src.cli`，入口函数相同。
+- `tests/test_cli_canonical.py`：**12 用例** —— normalize 的演练不落盘 / `--apply` 落盘 /
+  二次幂等（mtime 不变）/ `--limit` / 上游缺失非零退出；render 的演练不落盘 / `--apply` 写盘 /
+  **冲突不覆盖** / `--overwrite` 改写 / 目录缺失返回配置错误；`pyproject` 入口声明与可导入性。
+
+### Verified
+
+- `tests.test_cli_canonical`：**12/12 绿**；变异测试 **3/3 被捕获**
+  （render 强制覆盖 / render 演练也落盘 / normalize 演练也落盘）。
+- 全量：**647 用例**；失败集与改动前日志**逐条比对：新增 0 / 消失 0** → 零回归。
+- 全部在临时项目目录 + 仓库自带合成 fixture；**未触真实 `data/`、`knowledge/`**；未联网；无新增依赖。
+
+---
+
+## [Phase 4 · Step 5 + Phase 4 收尾] 2026-10-10 — 真实数据只读 dry-run 验收（Phase 4 完成）
+
+### Verified（真实数据**只读** dry-run，10 项全通过）
+
+对 5 条真实书签跑端到端只读演练（输出仅落临时目录，真实 `data/`、`knowledge/` **零写入**）：
+
+| 检查 | 结果 |
+|---|---|
+| 上游 JSONL → Canonical 校验 | 5/5 通过 |
+| Canonical JSON / Markdown 投影 | 5 + 5，失败 0、冲突 0 |
+| `rebuild-index` 内容索引 | inserted=5 |
+| **三处 tweet_id 集合一致**（JSON/Markdown/SQLite） | 5 = 5 = 5 |
+| `content_hash` 与 SQLite 逐条一致 | 5/5 |
+| **幂等**：二次写入 0 写，SQLite 全 unchanged | json=0 / md=0 / sqlite=5 |
+| **R6**：整库重建后运行态回初始态 | `NEW` / 0 / `NULL` |
+| **只读证明**：真实目录指纹前后相同 | data 29 文件、knowledge 14 文件，sha256 未变 |
+
+只读证明用「相对路径 + 大小 + `mtime_ns`」指纹前后比对，而非自述。
+可复跑脚本：`X-Bookmark-Knowledge-Automation/scripts/step5-dryrun`。
+
+### Docs
+
+- 新增 `docs/X-Bookmark-Knowledge-Phase4-Report-2026-10-10.md`：Phase 4 完成报告
+  （四个 Step 的交付与提交、S5 验收结果、Muse 审计历史、**如实列出的 5 项缺口**、下一步）。
+- `tasks/PHASE-4-STORAGE.md` / `tasks/CURRENT.md`：S5 标记完成。
+
+### Noted（未覆盖，如实记录）
+
+- dry-run 仅 5 条样本，未覆盖 `x_article`/`quoted_tweet`/媒体的全部分支；
+- Phase 4 未做真实落盘（属 Phase 7 `process` 范围）；
+- frontmatter 未产出 `tags`/`categories`/`engagement`（Canonical 无此字段，不编造）；
+- `src/storage/` 与旧 `src/ingest`/`src/markdown`/`src/database` 仍**并存**（R1 未决）。
+
+---
+
+## [Phase 4 · Step 4] 2026-10-10 — rebuild-index（删库重建内容索引）
+
+### Added
+
+- `src/storage/rebuild.py` —— 决策 D4 指定的重建实现：
+  - `scan_normalized()`：扫描 `data/normalized/{tweet_id}.json`，逐条 `validate_bookmark`；
+    坏 JSON / 非法 Canonical / **重复 tweet_id** 记入 `failures` 而**不中断扫描**（AGENTS §2.7）；
+  - `rebuild_index()`：两种模式 —— **整库重建**（备份旧库 → 建新库 → 写内容索引 ⇒ 运行态回初始态，R6）
+    与 **`in_place`**（按 `content_hash` 幂等刷新，**运行态原样保留**）；
+  - 旧库默认备份为 `state.db.bak-<UTC>`（含 WAL/SHM 清理），可 `backup=False` 跳过；
+  - `RUNTIME_RESET_NOTE`：把 R6「运行态重建即重置」的逐字段说明做成常量，供 CLI 帮助文本复用。
+- `src/cli/main.py`：新增 `rebuild-index` 子命令 —— `--normalized-dir` / `--raw-dir` /
+  `--apply`（默认**只演练**，不创建/不修改任何文件）/ `--in-place` / `--no-backup`；
+  帮助文本含重置语义（D4 明确要求）。
+- `tests/test_storage_rebuild.py` —— **22 用例**：扫描与容错、演练不落盘、
+  **删库→重建→内容索引逐条一致**、运行态重置、备份与免备份、字段映射、
+  `--in-place` 幂等且保留运行态、CLI（帮助含重置语义 / 演练 / apply / 目录缺失 EXIT_CONFIG / 失败非零退出）。
+
+### Verified
+
+- `tests.test_storage_rebuild`：**22/22 绿**；变异测试 **2/2 被捕获**
+  （不丢弃旧库 → 2 个用例失败；字段映射写错 → 3 个用例失败）。
+- 全量：**635 用例**；失败集与改动前的全量日志**逐条比对：新增 0 / 消失 0** → 零回归。
+- 全部在临时目录；未触真实 `data/`、`knowledge/`；未联网；无新增依赖。
+
+---
+
+## [Phase 4 · Step 3] 2026-10-09 — SQLite 索引（R6 字段二分落地）
+
+### Added
+
+- `src/database/r6_fields.py` —— **R6 分类的唯一真实来源**（`ARCHITECTURE.md` §6.3.1 / 决策 R6）：
+  - 内容索引（`tweet_id`/`content_hash`/`path`/可搜索字段…）：可由 `normalized/*.json` 重建，不可丢失；
+  - 运行态（`status`/`attempts`/`error_message`/`*_at`/`download_status`/`fetch_status`）：**无重建来源，重建时重置**；
+  - 结构列（代理主键 `id`）：重建时由 SQLite 重新分配；
+  - `assert_classification_complete()` 双向校验 DDL 与归类——**DDL 新增列忘记归类会直接报错**。
+- `src/database/index_store.py`：
+  - `upsert_content_index()`：按 `content_hash` 幂等——**同 hash 一个字节都不写**（不写盘、不动时间戳、不触发 FTS）；
+    变化时**只更新内容索引列**，并在接口层拒绝运行态键（`status=`/`attempts=` → `ValueError`），把 R6 边界变成接口约束；
+  - `rebuild_runtime_state()`：三张表运行态重置为初始态（`NEW` / `0` / `NULL` / `PENDING` / 时间戳=重建时刻），内容索引原样保留；
+  - `content_index_snapshot()`：供"重建前后一致"验证。
+- `tests/test_database_r6.py` —— **19 用例**：分类完整性（含"漏归类必须报错"）、`content_hash` 列与索引、
+  幂等三态、**内容更新绝不触碰运行态**、运行态键被拒、FTS 随内容更新、旧 NULL 行被修正、
+  运行态重置与幂等、**重建等价（删库→重建→内容索引逐列一致、运行态回初始态）**。
+
+### Changed
+
+- `src/database/schema.py`：新增 `MIGRATION_3`（`bookmarks.content_hash` + `idx_bookmarks_content_hash`）。
+  **原表没有 `content_hash` 列**，而 R6 的幂等与内容索引均依赖它；迁移前写入的行为 NULL（视为"内容已变"，会被修正）。
+
+### Fixed
+
+- 两处**硬编码 schema 版本**的脆弱断言（被 migration 3 暴露），改为引用 `SCHEMA_VERSION` / `MIGRATIONS`：
+  `tests/test_database.py::test_upgrades_legacy_v1_database_to_latest`、
+  `tests/test_cli.py::test_status_json_reports_database_and_upstream`。
+
+### Verified
+
+- `tests.test_database_r6`：**19/19 绿**；`tests.test_database`：**70/70 绿**（migration 3 为加列，未回归）。
+- 全量：**611 用例**（592 + 19）；失败集与 Step 3 之前的全量日志**逐条比对：新增 0 / 消失 0** → **零回归**。
+- 离线、SQLite 全在 `:memory:` 或临时目录，未触真实 `data/`。
+
+---
+
+## [Phase 4 · Step 2] 2026-10-09 — Markdown 投影（Canonical → 知识库 Markdown）
+
+### Added
+
+- `src/storage/markdown_projection.py` —— 落盘 `knowledge/X-Bookmarks/{YYYY}/{MM}/{YYYYMMDD}-{tweet_id}.md`：
+  - 路径布局**复用** `src.markdown.render.date_parts`，与 Phase 8 的 `assets/` 布局永不漂移；
+  - frontmatter **14 键**（tweet_id / author / author_username / author_id / created_at / source /
+    collector / collected_at / updated_at / content_hash / url / conversation_id / media_count / link_count），
+    按 **Canonical 决策 D2**：`author` = 显示名、`author_username` = handle；
+  - 正文两段式：`## Original Tweet`（可恢复原文 + 媒体/外链/引用/文章子段）+ `## AI Analysis`
+    （**仅占位说明，绝不编造分析内容**）；
+  - **不覆盖内容不同的既有文件**（验收 D）：内容相同则跳过（mtime 不变），内容不同抛 `MarkdownConflict`
+    且原文件保持不变，仅显式 `overwrite=True` 才改写；
+  - 原子写（同目录临时文件 + `fsync` + `os.replace`）、权限按 umask 收敛（0644）、无临时文件残留；
+  - 批量入口 `write_all_markdown` 逐条隔离冲突与错误（AGENTS §2.7），冲突数单列。
+- `src/storage/json_projection.py` 公开 `safe_tweet_id`（供 Markdown 投影复用同一套文件名安全规则）。
+- `tests/test_storage_markdown.py` —— **30 用例**：路径布局与回退、frontmatter 键序与 YAML 可解析、
+  D2 语义、两段式正文、AI 段无编造、可选子段按需渲染、不覆盖/不改写/显式改写、原子写与权限、
+  路径穿越拒绝、批量隔离。
+
+### Decided
+
+- **与 `ARCHITECTURE.md` §7 的两处差异（已记录，未自行扩张）**：
+  1. §7 目标 frontmatter 含 `tags` / `categories`，但 CanonicalBookmark 无此字段 → **不写**这两键，
+     避免凭空断言"无标签"；
+  2. §7 称保留 `engagement` / `primary_category` / `folder_names` 扩展键，但 Canonical 无此字段且
+     Phase 4 不得依赖 Field Theory 侧数据 → 无法生成，记为 gap。
+- §7 示例中的 `author: "username"` 属决策 D2 明确之前的旧写法；本实现按 **D2（author=显示名）** 处理。
+
+### Verified
+
+- `tests.test_storage_markdown`：**30/30 绿**；变异测试 **2/2 被捕获**（忽略不覆盖规则 → 7 个用例失败；
+  D2 语义互换 → 8 个用例失败）。
+- 全量回归：**592 用例 / 9 失败**；失败集与改动前的全量日志**逐条比对：新增 0 / 消失 0** → 零回归
+  （按 `X-Bookmark-Knowledge-Automation/docs/EVIDENCE-CONVENTIONS.md`：不使用不可跨环境复算的摘要）。
+- 未写真实 `knowledge/`、`data/`（测试全用临时目录）；未联网；无新增第三方依赖
+  （测试用项目已依赖的 PyYAML 校验 frontmatter）。
+
+---
+
+## [Phase 9 · 审计响应] 2026-10-09 — 外链层第三方审计：CFG-01 修复 + QA-01 文档更正
+
+> 来源：第三方《X-Bookmark-Knowledge 静态审计报告》（审计对象为 `src/external/` 外链抓取层）。
+> 该报告 3 项发现经本机逐条实测：**CFG-01 与 QA-01 成立并已修复**；
+> **SEC-01 属真实结构性缺口但修复需选择安全加固路线，待用户决策**，本轮不修。
+
+### Fixed
+
+- **CFG-01（配置一致性 bug）**：`LinkResolver.__init__` 默认构造 `HttpFetcher` 时漏传
+  `block_non_public_hosts` / `allow_hosts`，导致 `external.allow_hosts`（白名单主机被误拦）与
+  `external.block_non_public_hosts`（关闭开关无效）在「不注入 fetcher」的调用方式下静默失效。
+  生产路径 `xbk links` 通过 `_build_link_fetcher` 本就显式传参，故线上行为未受影响；
+  但该默认分支此前**零测试覆盖**（4 处测试构造全部注入 `fetcher=`）。修复：补齐两个参数，
+  新增 2 个回归用例（配置继承 + 默认仍严格的反向用例），行为验证不触网、不做 DNS。
+  注：漏传参数默认值恰是最严格侧，故该缺陷**不会放宽**安全策略，只会误拦白名单主机。
+- **QA-01（文档过期）**：`README.md` 声称「最近一次通过：Ran 369 tests … OK（2026-09-21）」，
+  与当前分支不符 → 更正为 **2026-10-09 macOS 实测 532 用例 / 9 个平台语义失败**，
+  并说明该口径不可跨平台移植（Linux 沙箱为 3 failures + 16 errors）；测试命令由 Windows-only
+  改为 macOS/Linux 与 Windows 双写法；同步把 Phase 9 行的「提交仍待批准」更正为已提交（`78ed077`）。
+
+### Deferred
+
+- **SEC-01（真实结构性缺口，待决策）**：`netguard.check_url_allowed` 用系统解析器校验 IP 后，
+  `UrllibTransport` 走标准 `urllib` → `socket.create_connection` **再次独立解析**，全程无 IP 绑定，
+  理论上存在 DNS rebinding / TOCTOU 窗口。每跳重定向**已**重新校验（审计建议 3 实际早已实现）。
+  彻底修复需改传输层（绑定已验证 IP 连接 + 保留 SNI/Host），属设计变更，需用户选定路线后再实施。
+
+### Notes
+
+- 本轮不做 Phase 9 验收状态变更；其单元测试实测 96 用例 / 1 个平台语义失败（同 macOS 口径）。
+
+---
+
+## [Phase 3 · 跨平台改造] 2026-10-08 — Collector Adapter（RawCollectorData → CanonicalBookmark）
+
+> 状态：**实现完毕、已离线验收、通过提交前独立审核，并完成第三方审计回应（2026-10-09）**。
+> 新增 133 用例全绿；5 条真实数据只读转换 5/5 通过 Schema 校验（经老板批准执行，见 `AGENTS.md` §16/§17）。
+> 决策、修正、审核与审计回应见 `docs/phase3-preflight-review.md` §10。
+> **未修改 Schema**、未写 `data/`/`knowledge/`、未联网、未提交 Git。
+> **零新增第三方依赖**（全部标准库；本机 `.venv` 仅 `pyyaml`，测试用 `unittest`）。
+
+### Added
+
+- `src/collector/raw_data.py` — 冻结 Collector↔Normalizer 边界契约：`RawCollectorData(collector, items, cursor)`
+  + `RawBookmarkItem(tweet_id, payload, enrichment=None)` + `RawDataContractError`。`payload` 保持上游
+  camelCase 原记录，FT 专属字段（`engagement`/`ingestedVia`/`sortIndex`…）只停留在 Raw 层。
+- `src/collector/fieldtheory/`（任务书 §7 指定路径）— `FieldTheoryCollector.collect() -> RawCollectorData`：
+  注入式复用 Phase 5 `FieldTheoryAdapter.read_bookmarks()` 读取上游 JSONL，并从项目内
+  `data/raw/{tweet_id}.json` 的 `enrichment` 块读取 Article/quotedTweet 富化。**不执行上游 CLI、不联网、不写盘**；
+  单条富化快照损坏默认降级为 `enrichment=None` 并记入 `last_warnings`（单条失败不拖垮整批），`strict=True` 可改为抛错。
+- `src/normalizer/` — `FieldTheoryNormalizer`（`RawCollectorData → CanonicalBookmark` dict，直接对接
+  `canonical.validate`）、`compute_content_hash()`（`ARCHITECTURE.md` §5.4 九项）、
+  `errors.py`（`NormalizationError` + 任务书 §16 六类错误映射表）。
+- `tests/test_raw_data.py`（21）、`tests/test_fieldtheory_collector.py`（23）、`tests/test_normalizer.py`（89）
+  — 覆盖任务书 §18 Test A–L，含「Canonical 输出恰好 19 键」「FT 专属字段不泄漏」「非 URI 外链丢弃」
+  「Article-only links 过滤」「外链保序去重」「幂等」「`content_hash` 排除元数据/engagement」
+  以及基于 **AST** 的依赖边界断言与「屏蔽进程/网络后仍跑通」的行为断言（提交前审核补充）。
+
+### Changed
+
+- `src/collector/base.py` — `Collector` Protocol 新增 `collect() -> RawCollectorData`（任务书 §22：复用既有
+  接口而非另起第二套），并 re-export `RawCollectorData`（+12 行）。
+- `PLAN.md` / `tasks/CURRENT.md` / `docs/phase3-preflight-review.md`（追加决策与修正记录；预检的
+  「18 字段/12 必填/6 可选」更正为 **19 属性/12 必填/7 可选**）。
+
+### Fixed
+
+- 预检评审中 `content_hash` 覆盖范围由「…等」更正为 `ARCHITECTURE.md` §5.4 确定的九项
+  （原描述漏了 `author_id`/`created_at`/`quoted_tweet`/`x_article.text`）。
+- 预检评审「`collected_at` 取 now()」与 Test L（幂等）的矛盾：改为取 `payload.syncedAt`，输出确定性。
+- **[A1，第三方审计，本机实测证实] 非 UTF-8 富化快照会拖垮整批**：`_read_enrichment` 原先只捕
+  `(OSError, json.JSONDecodeError)`，`read_text` 遇非 UTF-8 字节抛出的 `UnicodeDecodeError`
+  会穿透 `collect()` 中断整批，**违反 AGENTS §2.7「单条失败不得拖垮整批」**。改为捕获
+  `(OSError, ValueError)` 并统一转 `UpstreamContractError`，由 `strict` 决定降级或抛错（+2 回归用例）。
+- **[A2]** `_iso_utc` 只认大写 `Z`：ISO-8601 合法的小写 `z` 后缀被误拒；改为大小写不敏感（+1 用例）。
+- **[A3]** `tweet_id` 文档称「纯数字字符串」但实现只校验非空：**改文档**（放宽为「非空稳定身份字符串」，
+  以容纳未来 SaveBox / X API / 人工导入采集器），不加 `isdigit()`（+1 用例钉住行为）。
+- **[A4]** `compute_content_hash`（公开 API）传缺键 dict 时抛裸 `KeyError`：改为前置校验并抛
+  `NormalizationError`（+1 用例）。
+- **[A5]** `typing.Sequence` 用于 `isinstance` → 改用 `collections.abc.Sequence` / `Mapping`（风格，无行为变化）。
+
+### Decided
+
+- **决策 1**：Normalizer 输出 `dict`（不建 `CanonicalBookmark` dataclass），与 Phase 2 校验器无缝衔接。
+- **决策 2**：`content_hash` 由 Normalizer 计算，SHA-256，严格按 §5.4 九项；排除
+  `collected_at`/`updated_at`/`collector`/`source`/`engagement`。
+- **决策 3**：旧 `fieldtheory_adapter.py` 保留不动，新建 `src/collector/fieldtheory/` 包（任务书 §7 路径）。
+- **决策 4**：富化数据源为 `data/raw/{tweet_id}.json` 的 `enrichment` 块 → Phase 3 采集路径完全离线。
+- **决策 5**：`collected_at` / `updated_at` 取 `payload.syncedAt`。
+- `external_links` 过滤 scheme 无关（`http`/`https`）且覆盖 `x.com`/`twitter.com`；`x.com/i/article/…`
+  归 Article 语义而非外链；重复外链保序去重。`reply_to`/`thread` 显式写 `null` 并记为 Schema gap。
+
+### Deferred
+
+- `engagement` 无 Canonical 字段 → 留 `payload`（任务书 §14 不为完整支持扩张 Schema）。
+- `quotedTweet` **形状待验证**（真实 5 条 + fixtures 均为 `null`，无实测非空样本）；
+  `video`/`animated_gif` media 未实测。
+- 非绝对 URI 外链被丢弃（记 gap）；`Collector` Protocol 仍含写上游的 `sync()`（未来可拆只读 Protocol）。
+- **S2（第三方审计）：`FieldTheoryCollector` 未形式化满足 `Collector` Protocol**（只实现
+  `check_ready` + `collect`，故意不暴露会写上游的 `sync`/`read_bookmarks`）。当前靠鸭子类型、仓库内无
+  `isinstance(x, Collector)`，无实际破坏；**须在 Phase 4 开工前做架构决策**（拆 `ReadOnlyCollector`
+  Protocol，或显式实现完整接口）。
+- **S1（第三方审计）：跨平台验收基线不存在**。本机 macOS 全量 530 用例 / 9 失败（平台语义）；
+  第三方 Linux 沙箱复跑为 3 失败 + 16 错误（其中 14 个 `test_external` 错误是沙箱 DNS 把
+  `example.com` 解析到 `198.18.11.198` 触发 `netguard` 正确拦截）。**「N 个失败」不能作为 Phase 4
+  回归口径**，Phase 6 必须重建分类基线（网络敏感 / 平台语义 / 真实缺陷）。详见
+  `docs/phase3-preflight-review.md` §10.8.3。
+- A7：`quoted_tweet` 非空形状与 `video`/`animated_gif` media 待真实样本补测。
+
+---
+
+## [Phase 2 · 跨平台改造] 2026-10-08 — CanonicalBookmark JSON Schema + 校验器
+
+> 状态：**实现完毕、已验收**（`tests/test_schema.py` 28/28 绿，经老板批准运行）。
+> 说明：以下 Phase 记录为「跨平台改造」新序列，与旧 Phase 9（上方）是两条独立时间线。
+> 旧序列记录保留作 Windows 时代存档。
+
+### Added
+
+- `schema/bookmark.schema.json` — `CanonicalBookmark` 权威契约（JSON Schema draft 2020-12）：
+  - 12 个必填键（含 `media` / `external_links`，见下「决策 A」）、18 个字段、3 个 `$defs`
+    （`mediaObject` / `quotedTweet` / `xArticle`）。
+  - `additionalProperties: false`：拒绝上游专属字段（如 `ingestedVia`），强制「Canonical 只认
+    契约、不泄漏 fieldtheory 形状」。
+  - `tweet_id` 为全局唯一主键；`source` 固定 `"x"`（决策 D5）；`content_hash` 锁定
+    SHA-256 十六进制 64 字符（`pattern`）。
+- `src/canonical/validate.py` — 标准库校验器 `validate_bookmark()`，与 schema 一一对应，
+  **零第三方依赖**（不引入 `jsonschema`，符合「依赖最小化」）。
+- `src/canonical/__init__.py` — L3 Canonical Data Layer 包（当前仅含校验器）。
+- `tests/test_schema.py` — 28 用例：合法样本 / 缺必填键 / 错类型 / 固定值 / 时间与 URI 格式 /
+  `content_hash` 格式 / media 与外链 / 嵌套结构 / schema 文件静态一致性（防漂移）。
+
+### Decided
+
+- **决策 A**：`media` / `external_links` 为**必填但允许空数组**的字段（缺 key 即非法，空数组合法）。
+  理由：跨设备交换时字段结构稳定，下游不必判空。
+- **决策 B**：校验器采用标准库手写，**不引入 `jsonschema`**。理由：项目红线「依赖最小化、
+  优先标准库」；且生产与测试共用同一校验逻辑，避免「schema 与实现两份校验」漂移。
+- 落实架构决策 D2（`author`=显示名 / `author_username`=handle / `author_id`=用户 ID）、
+  D5（`source="x"`）。
+
+### Changed
+
+- `PLAN.md` — 顶部新增「跨平台改造」状态段与阶段表；旧 Windows 阶段表标注为「已过时存档」。
+
+---
+
+## [Phase 9] 2026-09-20 — External Link Extraction（实现完毕，**待验收**）
+
+> 状态：**实现完毕、未验收**。待验证清单见 `tasks/CURRENT.md`，未获批准前不得执行。
+
+### Added
+
+- `src/external/fetcher.py` — `HttpFetcher`：标准库 `urllib`，超时 / 重试 / 退避 / 逐跳重定向 /
+  `Content-Length` 与读取上限 / BOM + `<meta charset>` 编码探测；传输层可注入（测试全离线，ADR-017）
+- `src/external/handlers/` — `base`（`ContentHandler` / `select_handler`）、`web`（`html.parser`：
+  标题 / 摘要 / canonical / 正文，skip 标签列表）、`github`（`owner/repo` 标题策略）；`pdf` 暂未实现
+- `src/external/resolver.py` — `LinkResolver`：逐条隔离、写入
+  `assets/{tweet_id}/links/{link_key}.md`（无时间戳 → 内容幂等）、`FETCHED` 且正文仍在知识库内时
+  不联网、`FAILED` 在 `external.max_attempts`（默认 3）后停止重试（`--force` 强制）
+- `src/config.py` — `ExternalOptions` + `load_external_options()`；新增键 `delay_seconds` /
+  `max_redirects` / `max_attempts` / `skip_domains`（默认 `x.com` / `twitter.com`）/ `links_subdir`
+- `src/cli/main.py` — `links [--tweet-id] [--limit] [--force] [--dry-run]` 子命令；
+  `status` 报告外链状态计数；流水线顺序 `sync → media → links → process`
+- `tests/test_external.py` — 抓取封装 / handler / resolver / CLI 端到端（注入 fake transport，全程无 socket）
+
+### Changed
+
+- `src/database/repository.py` — `set_link_status()` 新增 `title`；新增
+  `count_external_links()` / `count_external_links_by_status()` / `list_links_by_status()`
+- `src/ingest/ingest.py` — `external_links.fetch_status` 只在**首次插入**时写入 `PENDING`（同
+  Phase 8 的 `media.local_path` 规则；回归测试在 `tests/test_ingest.py`）
+- `src/markdown/render.py` — `## external_links` 支持富化（`[title](url)` + 正文相对路径 /
+  最终地址 / 失败原因）；无富化信息时与 Phase 7 完全一致
+- `src/markdown/writer.py` — `MarkdownWriter` 支持 `link_lookup`，把知识库内的 `content_path`
+  换算为相对本文件的 POSIX 路径
+- `config/config.example.yaml` — `external` 段补充新键与说明（`pdf` 处理器标注为未实现）
+- `README.md` / `ARCHITECTURE.md` / `PLAN.md` / `memory/` / `tasks/CURRENT.md` — Phase 9 状态与命令
+
+### Fixed
+
+- Phase 9 前置缺陷（同 Phase 6 缺陷 #1 同族）：重复 `sync` 会把外链的 `fetch_status` 重置为
+  `PENDING`，导致已抓取的行每轮同步倒退。修复：ingest 仅在插入时写入 `fetch_status`。
+
+---
+
+## [Review] 2026-09-21 — Phase 9 复审阻断项关闭（实现修复 + 经批准的离线验证）
+
+> 状态：复审三项阻断 + lint 全部关闭；`tests.test_external` 94/94 OK，全量 369/369 OK
+> （2026-09-21 经批准运行，exit 0）；`git diff --check` 干净。**真实数据写运行仍待批准**。
+
+### Added
+
+- `src/external/netguard.py` — 非公网目标判定（回环 / 私网 / 链路本地（含 `169.254.169.254`）/
+  CGNAT / 组播 / 保留段 / IPv6 ULA；IPv4-mapped 归一）；`host_resolver` 可注入（测试不触 DNS）
+- `HttpFetcher` 新增 `BlockedTargetError`；初始目标与每一跳重定向后都复核；策略拒绝不重试
+- 配置：`external.block_non_public_hosts`（默认 true）、`external.allow_hosts`（默认 []）
+- `tests/test_external.py` 新增 `ReviewFixTests` 8 用例（SSRF、重定向复核、canonical 端到端、
+  失败清字段三态、仓储 `clear_fields` 非法字段名）
+
+### Fixed
+
+- 复审阻断 1（SSRF）：`netguard` + 逐跳复核；命中在 resolver 中按策略跳过处理（记原因、不计
+  attempt、不联网），满足敏感信息不进 Markdown 的红线
+- 复审阻断 2（canonical）：`canonical_url` 优先写入 `external_links.resolved_url`（回退重定向
+  最终址）；正文 frontmatter 同时记录 resolved 与 canonical 两个 URL
+- 复审阻断 3（失败留旧正文）：`LinkUpdate.clear_fields` + `set_link_status(..., clear_fields=...)`
+  （`None` 仍表示未提供，ADR-004 不变）；`--force` 失败或 attempts 耗尽时清空
+  `content_path` / `title` / `resolved_url`，普通瞬时失败保留上次成功正文
+- lint：两处 `__init__.py` 文件末尾空行清除；`git diff --check` 干净
+- 新暴露缺陷：`handlers/base.py` 相对导入写错导致 `src.external` 整包不可导入；`repository.py`
+  引用 `ALL_LINK_STATUS_VALUES` 未导入；`fetcher._guard` 残留 `attempts_total` 死代码
+- CLI 标签 `local links` 更名 `links known`（该计数含 PENDING，原名误导；同步改两处测试）
+
+### Decided
+
+- SSRF 命中记为策略跳过而非 `FAILED`（不计 attempt、不重试、原因入库）。
+- 普通瞬时失败保留旧正文；仅在强制重抓失败或重试耗尽时清空。
+- 修正记录：`links --dry-run` 并非离线 - 只抑制写盘/写库，仍会发起真实 HTTP；已同步更正
+  `tasks/CURRENT.md` 与 README。真实数据写运行（`links` / `process` / 二次 `links` /
+  `sync --skip-collect`）改为单独审批项。
+
+### Notes
+
+- 全部改动未提交；提交与推送另行征求批准。
+
+
+## [Process] 2026-09-20 — 验证分级授权（用户指令）
+
+### Decided
+
+- **用户指令（2026-09-20）：未经允许不得擅自开始验证。** 落地为分级授权：
+  - **可直接进行**：只读检查（读取文件、搜索、`git status` / `git log` / `--help` 等不改状态、不联网的命令）
+  - **必须先批准**：运行测试或任何验收/探测脚本、任何联网（`ls-remote` / `clone` / `fetch` / `push` / 外链抓取）、任何写盘（文件 / 数据库 / 知识库）、任何使用用户凭据的远端操作
+- 请求批准时须提交「待执行清单」：命令原文 + 目的 + 影响范围（是否联网 / 是否写盘 / 预计耗时）
+- **实现完毕 ≠ 已验证**：未获批准的阶段只能表述为"实现完毕、未验收"
+
+### Changed
+
+- `AGENTS.md`：第 2 节新增第 16、17 条（验证分级授权与"实现完成先停下"）；第 7 节工作流插入"提交待验证清单 → 等待批准"关卡；第 8 节把"运行测试"从安全动作移入需批准动作，并新增联网动作条目
+- `.clinerules/20-execution.md`、`.clinerules/30-testing.md`：写入同一分级规则与禁止"顺手验证"的表述
+- `tasks/CURRENT.md`：Hard stop 增列验证授权要求
+
+### Fixed
+
+- 纠正此前的实践偏差（2026-09-20）：Agent 曾在未获批准的情况下自行执行 `git clone`、`git ls-remote`、凭据条目查看等"顺手验证"动作，超出授权范围；已停止此类行为
+
+---
+
+## [Repo] 2026-09-20 — 首次建立版本控制并推送到私有仓库
+
+### Added
+
+- `.gitignore` 新增知识库策略：`knowledge/*` 默认忽略，逐层放行后**仅**跟踪 `knowledge/X-Bookmarks/README.md`（四行式 `!` 规则——被排除目录内部无法用 `!` 找回文件，这是唯一正确写法）
+- 提交身份写入**仓库本地**配置：`dyanpeng-ops` / `dyanpeng-ops@users.noreply.github.com`（noreply 邮箱，不暴露真实地址）
+
+### Decided
+
+- 版本控制由用户授权启用（关闭 PLAN.md §5.3）：远程为**私有**仓库 `https://github.com/dyanpeng-ops/X-Bookmark-Knowledge.git`，远程名 `X-Bookmark-Knowledge`（**不是** `origin`），分支 `main`
+- 真实书签内容与本地媒体资产**不上传**（仅保留 `knowledge/X-Bookmarks/README.md`）；`.workbuddy/`（宿主侧 Agent 日志）按用户决定保留跟踪
+
+### Verified
+
+- 首个提交 `94da817`：73 个文件 / 12,725 行；`git ls-remote` 远端 `refs/heads/main` 与本地 HEAD 完全一致
+- 推送内容核查：不含 `config/config.yaml`、`data/`、`.venv/`、`*.db`；`knowledge/` 下仅 1 个文件（README）
+- 磁盘核查：`knowledge/X-Bookmarks/` 下 12 个文件（5 Markdown + 6 媒体 + README）**全部原样保留**，未被删除
+- `git check-ignore` 自检：README 未忽略，书签/媒体命中忽略规则；`config/config.yaml`、`data/state/state.db`、`data/upstream/bookmarks.jsonl` 均 `ignored=True`
+
+---
+
+## [Phase 8] 2026-09-20 — Media Localisation
+
+### Added
+
+- `src/media/localizer.py`：`MediaLocalizer` / `MediaSource` / `MediaUpdate` / `MediaStats`
+  - 目标布局 `knowledge/X-Bookmarks/{YYYY}/{MM}/assets/{tweet_id}/{media_key}{ext}`，年月与 Markdown 产物同源（复用新抽出的 `date_parts`）
+  - 稳定命名 `{media_key}{ext}`（`media_key = sha1(source_url)[:16]`）：DB 行与文件可直接互查，不随上游命名漂移
+  - 幂等：目标已存在且 SHA-256 与源一致 → `unchanged`（不重写、不动 mtime）；源内容变化 → 覆盖重写
+  - 原子复制：先写同目录 `.part` 再 `os.replace`，失败清理临时文件
+  - 单条失败隔离：缺源/读写失败 → 该行 `FAILED` + `error_message` + `attempts`，其余照常处理
+  - `dry_run`：只解析与报告，不建目录、不复制、不落库
+- **旧缓存路径归一（独立审计前置条件）**：源文件解析顺序 ① `local_path` 且在知识库内（已本地化）② `local_path` 且在配置的上游媒体目录内 ③ 上游清单索引 `sourceUrl → localPath` 的文件名 ④ `local_path` 文件名 ⑤ `source_url` 文件名；全部落空即如实报 `FAILED`。**只取文件名到配置的 `data/upstream/media/` 解析，从不读取旧 C: 缓存**
+- 跳过规则（不复制、不改 `local_path`，只在 `error_message` 记 `skipped: <原因>`）：`media.download=false`、上游状态非 `downloaded`、`media.download_video=false` 且类型为 `video`/`animated_gif`、体积超 `media.max_bytes`
+- `src/cli`：新增 `media [--tweet-id X] [--dry-run]` 子命令（退出码 0/1）；`media.download=false` 时打印 warn 并按 skipped 报告
+- `src/markdown/render.py`：抽出 `date_parts()`（Markdown 与 assets 共用同一套年月规则）；`_render_section_media` 支持 `media_files` 映射，`render_markdown(..., media_files=...)` 新增关键字参数（缺省保持 Phase 7 行为）
+- `src/markdown/writer.py`：`MarkdownWriter(..., media_lookup=...)` 把查询结果换算为**相对该 Markdown 文件**的 POSIX 路径；查询失败降级为远程 URL，不影响渲染
+- `src/cli process`：读取 `media.local_path`，**只接受位于 `knowledge_dir` 内且真实存在的文件**，旧缓存/缺失文件一律回退远程 URL；报告新增 `local media : N bookmark(s)`
+- `tests/support/stub_fieldtheory.py`：按清单为每个 `downloaded` 条目在上游 `media/` 下生成确定性文件（清单里仍保留合成绝对路径，正是待归一的场景）
+- `tests/test_media.py`（44 用例）：命名与布局、复制幂等与源替换、旧缓存路径归一、清单索引重定位、跳过规则、dry-run、落库意图、Markdown 段落与路径换算、CLI 端到端（`sync → media → process`、二次运行不变、失败隔离、`--dry-run` 不落盘、再次 sync 不倒退）
+
+### Changed
+
+- `src/ingest/ingest.py`：`media.local_path` 改为**只在首次插入时写入**——该字段 Phase 8 之后由媒体层接管（存放知识库内路径），重复 `sync` 不得用上游旧缓存路径覆盖（`tests/test_ingest.py` 新增回归用例）
+- `media.local_path` 语义收紧为"该媒体字节在本项目内的落点"：成功后写知识库内绝对路径；跳过/失败保持原值，Markdown 侧因此自然回退远程 URL
+
+### Decided
+
+- **清单里的全部媒体行都本地化**（含 `profile_image`），与审计"6 条 `media.local_path` 均需归一"的预期一致；`## media` 段落只引用推文自身的媒体，头像文件不参与渲染
+- 跳过**不写** `SKIPPED` 状态，而是保持上游状态 + 写 `error_message = "skipped: ..."`：否则每次 `sync` 都会被清单的 `downloaded` 改回 `DOWNLOADED`，产生"每轮全部更新"的假统计（Phase 6 缺陷 #1 的同族问题）
+- 流水线顺序固定为 `sync → media → process`（`process` 读取 `media` 写入的本地路径）
+
+### Verified (real data, 2026-09-20)
+
+- `media --dry-run`：attempted 6 / copied 6 / failed 0（6 条旧 C: 路径全部在配置目录内解析）
+- `media` 首次：copied 6 / failed 0；第二次：unchanged 6 / copied 0（幂等）
+- SQLite：6/6 行 `local_path` 指向 `knowledge/X-Bookmarks/.../assets/{tweet_id}/`，与 `data/upstream/media/` 源文件 SHA-256 逐条一致
+- `process --overwrite`：written 1 / unchanged 4（只有含推文媒体的那 1 份文件变化）；再次 `process`：written 0 / unchanged 5
+- `## media` 段由远程 `https://pbs.twimg.com/media/...` 改为 `assets/1900000000000000101/cf1939a0c2c6b71d.png`（文件存在）
+- `sync --skip-collect`：`media rows : 0 new, 0 updated, 6 unchanged` → 本地路径不被回退
+- 全量离线测试：**272 用例，exit 0**
+
+---
+
+## [Audit] 2026-09-17 — 独立审计跟进（Phase 8 前置条件）
+
+### Verified
+
+- 审计方独立复验：227 个离线测试通过；`status --json` 显示 schema v2 + 5 条 `PROCESSED`；`doctor` 全部 OK
+- 媒体路径核查：6/6 条 `media.local_path` 仍指向旧 `C:\Users\gscaee\.fieldtheory\bookmarks\media\...`；
+  `data/upstream/media/` 项目内副本逐字节一致（SHA-256 6/6，本侧复核确认）
+
+### Fixed
+
+- `config/config.example.yaml`：更正 `upstream_data_dir` 注释——配置值优先，`FT_DATA_DIR` 仅在配置留空时回退（ADR-013）
+- `plans/backlog.md` / `memory/current-state.md`：记录 Phase 8 前置条件——复制媒体前先将旧 C: 绝对路径
+  归一到配置的 `data/upstream/media/` 并校验文件；回归测试需覆盖旧绝对路径行与源文件缺失/被替换
+
+---
+
+## [Phase 7] 2026-09-17 — Markdown Generator（M3 达成）
+
+### Added
+
+- `src/markdown/render.py`：`RenderOptions` + `render_markdown()`
+  - Frontmatter 固定 13 键（tweet_id / url / author_handle / author_name / created_at / language / media_count / link_count / engagement / tags / primary_category / folder_names / source），日期归一为 UTC ISO-8601
+  - 8 个段落：`tweet` / `thread` / `media` / `article` / `external_links` / `metadata` / `ai_analysis` / `source`；未配置段落自动跳过，未知段落名打印警告但不中断
+  - 输出路径 `YYYY/MM/YYYYMMDD-{tweet_id}.md` 按**发帖日期**（非同步日期）分组；无日期回退 `unknown/unknown/`
+  - 正文统一转义（`|` 等），避免破坏 Markdown 表格；缺失字段渲染为占位（`_无媒体_` / `_无引用推文_` / `_未展开文章_` 等）
+- `src/markdown/writer.py`：`MarkdownWriter`
+  - 逐条渲染 → 与既有文件**内容哈希比对**：相同跳过、不同拒绝覆盖（`overwrite_existing: false`，`process --overwrite` 可显式覆盖）、单条失败隔离
+  - 状态推进 `COLLECTED → PROCESSED` 并记录 `markdown_path`；`stats` 报告 written/unchanged/conflicts/failed
+- `src/cli` 新增 `process` 子命令（`process [--overwrite]`）：从 `data/raw/` 读原始归档，逐条渲染写入 `knowledge/X-Bookmarks/`
+- `tests/test_markdown.py`（23 用例）：frontmatter 键序与取值、各段落渲染与占位、路径规则、写盘（首写/跳过/拒绝覆盖/失败隔离/状态推进）、端到端 CLI `process`（离线桩，临时目录）
+
+### Fixed
+
+- **中文 Windows 子进程编码崩溃**（14 个测试失败的共同根因）：上游 `fieldtheory` CLI 输出 `✓`、`⠋` 等非 GBK 字符时，Windows 子进程默认 cp936 编码导致 UnicodeEncodeError。
+  - `src/collector/fieldtheory_adapter.py`：子进程环境注入 `PYTHONIOENCODING=utf-8`
+  - `tests/support/stub_fieldtheory.py`：启动时 `reconfigure` stdout/stderr 为 UTF-8（errors=replace）
+  - 详见 ADR-014
+- `tests/test_markdown.py` 断言修正：输出按发帖年月分组（夹具记录归 `2026/06/` 而非 `2026/09/`）
+
+### Decided
+
+- **实现 `thread` 与 `ai_analysis` 段落而非从配置移除**：两者是 `config.example.yaml` 声明的契约段落。`thread` 渲染富化 `quotedTweet`（JSONL 不携带，来自 `data/raw/` 归档）；`ai_analysis` 当前为占位段，Phase 11 AI 增强落地时向同一标题写入内容（ADR-015）
+- `RenderOptions.include_sections` 默认值与 `config.example.yaml` 的 8 段顺序保持一致
+
+### Deferred
+
+- 媒体本地化后 `## media` 段改用本地相对路径（Phase 8）
+- `ai_analysis` 真实内容生成（Phase 11）
+
+### 验收（2026-09-17，真实数据）
+
+- `.venv\Scripts\python.exe -B -m unittest discover -s tests -t .` → **227 passed / exit 0**
+- `python -m src.cli sync --skip-collect` 二次运行：`new: 0 / unchanged: 5`，raw 归档 0 重写
+- `python -m src.cli process`：5 个 Markdown 全部写入 `knowledge/X-Bookmarks/{2026-03, 2026-06, 2026-09}/`；**二次运行 `written: 0 / unchanged: 5`**，无未知段落警告
+- `python -m src.cli status`：DB 5 条全部 `PROCESSED`；上游 `[ok] records=5`
+
+---
+
+## [Phase 6] 2026-09-16 — 增量同步 + CLI 入口（M2 达成）
+
+### Added
+
+- `requirements.txt`：新增第三方依赖 **PyYAML 6.0.3**（`pyyaml==6.0.3`）；理由与备选见下方 Decided
+- `src/config.py`：YAML 配置加载（`load_config`）
+  - 强类型配置对象：`PathsConfig` / `CollectorConfig`（含 `SyncConfig`、`AuthConfig`）/ `IngestConfig` / `LoggingConfig` / `AppConfig`
+  - **所有相对路径按项目根解析为绝对路径**（AGENTS.md 第 5 节：禁止硬编码盘符）
+  - 版本校验（`version: 1`）、类型校验、未知顶层键上报、`require_file=False` 供 `doctor` 探测
+  - `paths.state_db_path` = `data/state/state.db`；`paths.raw_json_path(tweet_id)`
+- `src/ingest/ingest.py`：`Ingestor` + `IngestStats`
+  - 上游 `UpstreamBookmark` + `EnrichedBookmark` + `MediaEntry` 幂等写入 `bookmarks` / `media` / `external_links`
+  - 逐条原始 JSON 归档到 `data/raw/{tweet_id}.json`（内容**不含时间戳**，因此"内容未变即跳过重写"）
+  - **单条失败隔离**：失败写入 `FAILED` + `error_message` + `attempts`，其余记录照常入库
+  - 媒体键稳定派生（`sha1(source_url)[:16]`）、媒体类型推断（profile_image / photo / video）、清单状态映射
+  - 外链按 tweet 去重、提取 domain、空白 URL 直接跳过
+- `src/cli/main.py` + `src/cli/__main__.py`：`python -m src.cli` 入口
+  - `sync`：可选调用上游采集 → 幂等入库 → 打印报告（fetched/new/updated/unchanged/failed/transitions/raw/media/links/状态分布）
+  - `status`（支持 `--json`）、`doctor`（配置/项目根/上游可执行/上游版本/上游数据/数据库 schema/日志目录/上游盘符）
+  - 退出码：`0` 成功、`1` 业务失败、`2` 配置错误、`3` 上游失败
+  - 日志：控制台 + `data/logs/YYYY-MM-DD.log`，并在命令结束时关闭句柄
+- `tests/test_config.py`（21 用例）、`tests/test_ingest.py`（25 用例）、`tests/test_cli.py`（17 用例）—— 全部离线，使用临时目录 + 离线桩
+
+### Changed
+
+- `PLAN.md`：Phase 6 完成、M2 达成、§4.4 实施记录、技术栈表补齐 YAML 依赖
+- `tasks/CURRENT.md` / `plans/ACTIVE.md` / `memory/current-state.md`：推进到 Phase 7 待授权
+- `config/config.example.yaml`：新增 `collector.executable_args`；`FT_DATA_DIR` 说明改为"配置优先，环境变量回退"
+
+### Fixed
+
+- `src/database/repository.py`：`upsert_media()` 与 `upsert_external_link()` 的 `UpsertResult.changed` 被硬编码为 `True`，导致每次同步都报告"媒体/外链全部更新"。现按与 `upsert_bookmark` 相同的语义比较实际差异
+- `src/collector/fieldtheory_adapter.py`：传入**命令序列**（如 `python -B stub.py`）时跳过可执行文件解析，`doctor` 因而把不存在的命令误判为可用；现首元素仍经 `shutil.which` 解析
+- `src/cli/main.py`：日志 `FileHandler` 从不关闭，Windows 下日志文件保持锁定（临时目录无法清理）；现有 `_teardown_logging` 在命令结束时关闭并移除处理器
+- `src/ingest/ingest.py`：仅含空白的 URL（`"   "`）会穿透过滤并让整条书签被标记 `FAILED`；现按空白跳过
+- `tests/test_ingest.py` 夹具：`raw` 载荷未跟随字段变化，幂等测试失真
+
+### Decided
+
+- **引入 PyYAML**：标准库无 YAML 解析；配置含嵌套映射与注释，手写子集解析的出错成本高于一个成熟依赖。备选（手写子集解析、改用 TOML/INI）被拒：前者易在引号/转义上出错，后者与已发布的 `config.example.yaml` 不兼容。重新评估条件：若要求"零第三方依赖"，可改为 INI 并同步迁移示例配置
+- **配置优先于环境变量**：`collector.upstream_data_dir` 以配置文件为准，`FT_DATA_DIR` 仅在配置留空时回退（ADR-013）
+- **新建记录直接落 `COLLECTED`**：采集与入库同时完成，不留 `NEW`
+- **原始归档不含时间戳**：时间保存在 SQLite（`first_synced_at` / `last_synced_at`），使归档内容可做"内容相等即跳过"的判断
+
+### Deferred
+
+- `--classify` / `retry` / `process` / `enrich` / `verify` 子命令（后续阶段）
+- 媒体本地化到 `knowledge/.../assets/`（Phase 8）；当前只记录上游 `localPath`
+- AI 增强（Phase 11）
+
+### Incident（已记录，需用户授权后恢复）
+
+**测试误写真实上游目录**：由于当时"环境变量优先于配置"的优先级设定，`test_cli.py` 的离线桩把 3 条合成夹具记录写进了真实的 `data/upstream/`（JSONL 被覆盖为 3 条夹具记录，`bookmarks.db` 增至 8 行，另有 `stub-argv.txt`）。
+
+- 已修复根因（配置优先 + 测试隔离），并实测验证：整套 204 个测试运行前后 `data/upstream` 的文件名与时间戳**完全不变**
+- 真实数据完好保留在 `~/.fieldtheory/bookmarks`（C:，迁移时的源目录，未删除）与 `bookmarks.db` 内
+- 待用户在授权后清理 `data/upstream` 并重新采集，见 `tasks/CURRENT.md`
+
+---
+
+## [Phase 5] 2026-09-16 — 实现 Collector（上游 fieldtheory 适配器）
+
+### Added
+
+- `src/collector/contract.py`：**冻结的上游字段契约**——`bookmarks.jsonl`（21 必填键 + 可选 `textExpandedAt`）、嵌套 `author`/`engagement`/`mediaObjects` 必填键、`media-manifest.json`（schemaVersion=1）、`bookmarks-meta.json`、`bookmarks-backfill-state.json`、`list|show --json` 富化记录；两类时间格式解析（RFC822 风格 `postedAt`、ISO-8601 `Z`）；未实测项显式标注 `UNVERIFIED`
+- `src/collector/base.py`：`Collector` 协议；错误体系 `CollectorError` / `UpstreamUnavailableError` / `UpstreamContractError` / `UpstreamAuthError` / `UpstreamTimeoutError` / `UpstreamExecutionError`；结果类型 `SyncRunResult` / `UpstreamArtifacts`；数据类 `UpstreamBookmark` / `EnrichedBookmark` / `MediaManifest` / `MediaEntry`
+- `src/collector/fieldtheory_adapter.py`：`FieldTheoryAdapter`
+  - `sync()`：完整映射 `--browser/--no-media/--rebuild/--continue/--gaps/--folders/--folder/--max-pages/--target-adds/--max-minutes/--delay-ms/--yes`
+  - `read_bookmarks()` / `read_media_manifest()` / `read_meta()` / `read_backfill_state()`
+  - `list_enriched()` / `show_enriched()`：唯一可取 Article 正文的通道
+  - `check_ready()` / `upstream_version()`
+  - 数据目录解析优先级：显式参数 > `FT_DATA_DIR` > `~/.fieldtheory/bookmarks`；每次调用都显式设置 `FT_DATA_DIR`
+  - 子进程统一 timeout、瞬时错误有界重试（认证类错误不重试）、错误分类、stdout JSON 容忍前后噪声
+- `tests/test_collector_contract.py`：34 个用例，含**快照测试**（冻结键集与真实捕获一致）与各类契约违规
+- `tests/test_collector_fieldtheory.py`：42 个用例，路径解析 / 参数映射 / 重试 / 错误分类 / 解析 / 幂等
+- `tests/support/stub_fieldtheory.py`：离线上游桩（正常、认证失败、瞬时失败、慢响应、噪声输出）
+- `tests/fixtures/upstream/`：5 个合成夹具（JSONL / media-manifest / list / meta / backfill-state），结构等同真实样本但内容为虚构
+
+### Changed
+
+- `src/collector/__init__.py`：由占位声明改为对外导出面（`FieldTheoryAdapter` + 结果类型 + 错误类型）
+- `PLAN.md`：Phase 5 前置条件 A–D 全部关闭并写入 §4.3 实施记录；§1 状态与 §7 风险登记同步更新
+- `research/architecture-decision.md` §4.3：由\"待确认\"替换为**实测冻结的字段映射**（含分页/增量语义与 Article 正文位置）
+
+### Fixed
+
+- `contract.py`：嵌套对象原先只校验\"已出现键的类型\"，缺 `type` 的 `mediaObjects` 条目会被放过 → 新增 `AUTHOR_REQUIRED_KEYS` / `ENGAGEMENT_REQUIRED_KEYS` / `MEDIA_OBJECT_REQUIRED_KEYS`
+- `contract.py`：`bookmarks-backfill-state.json` 的 `lastCursor` 被当作必填，导致媒体同步后的真实数据读取失败 → 改为可选并记录已观测 `stopReason` 值
+- `tests/test_collector_fieldtheory.py`：漏导入 `UpstreamContractError`
+- `tests/support/stub_fieldtheory.py`：`slow` 场景原先只对 `sync` 生效 → 改为对所有命令生效
+
+### Decided
+
+- **认证路径以 Firefox 会话为准**：Firefox 156 的 `cookies.sqlite` 为明文，`ct0`/`auth_token` 可直接读取；Chrome 155 的 App-Bound Encryption（`v20`）在上游 1.3.22 下不可用
+- **双源采集**：JSONL 取原始记录 + `list --json` 取富化（Article 正文不在 JSONL）
+- 首次全量采集必须用 `--continue` 或 `--rebuild`：默认增量在连续 3 页无新增后即停止
+- 数据目录可用 `FT_DATA_DIR` 重定位（用于把媒体落到 D 盘，规避 C 盘仅剩约 6.4 GB 的风险）
+
+### Deferred
+
+- `config/config.yaml` 的 **YAML 解析依赖**仍未决定（Phase 6 前置）
+- 视频/多图 `mediaObjects` 变体、`skippedTooLarge`/`failed` 状态字符串未实测（样本中不存在）
+- 上游 `classify` 未运行（`primaryCategory` 全为 `unclassified`）；分类是否复用上游留待 Phase 11 决定
+
+---
+
+## [Phase 4] 2026-09-15 — 设计数据模型（SQLite）
+
+### Added
+
+- `.venv/`：项目内虚拟环境，解释器固定 Python 3.12.13（默认 3.14.3 过新）
+- `requirements.txt`：当前**无第三方运行时依赖**（数据层仅用标准库）
+- `src/database/clock.py`：UTC 时间戳工具（`YYYY-MM-DDTHH:MM:SSZ`），支持注入固定时间以便测试确定性
+- `src/database/states.py`：书签状态机（`NEW → COLLECTED → PROCESSED → ENRICHED → COMPLETED`，`FAILED` 可重入）+ 媒体/外链状态词表；`InvalidStateTransition`
+- `src/database/schema.py`：`Migration` 数据结构、版本化 DDL（v1 书签 / v2 媒体+外链+FTS5）、`SCHEMA_VERSION = 2`；CHECK 约束由枚举生成
+- `src/database/transaction.py`：`transaction()` 显式事务上下文（`BEGIN IMMEDIATE`，异常含 `BaseException` 均回滚）、`in_transaction()`
+- `src/database/migrations.py`：`current_version` / `recorded_versions` / `pending_migrations` / `apply_migrations`（单事务原子应用、幂等）/ `is_up_to_date`
+- `src/database/models.py`：`BookmarkRecord` / `MediaRecord` / `ExternalLinkRecord`（含 `from_row`）
+- `src/database/repository.py`：`BookmarkRepository` —— 幂等 upsert（书签/媒体/外链）、状态流转、错误记录、计数、按状态列表、FTS5 检索、级联删除、媒体/外链状态更新
+- `src/database/connection.py`：`connect()`（自动建目录、`foreign_keys=ON`、`busy_timeout`、文件库 WAL、可选自动迁移）+ `schema_status()`
+- `src/database/__init__.py`：对外导出面（`__all__`）
+- `tests/test_database.py`：68 个用例，覆盖初始化、迁移（幂等/旧库升级/失败回滚/版本校验）、事务提交与回滚、唯一与 CHECK 约束、状态机、幂等 upsert、媒体、外链、FTS5、级联删除、时间戳
+- `tests/__init__.py`：使 `tests` 成为可发现的包
+
+### Changed
+
+- `config/config.example.yaml`：修正采集器文案（原写"唯一已实现的适配器"，但 Adapter 属 Phase 5 工作项）；`executable` 由 `fieldtheory` 改为 `fieldtheory.cmd`
+- `PLAN.md`：新增 4.2 Phase 4 实施记录；技术栈表更新（venv 已建、测试运行器已定）；阶段状态更新
+- `tests/README.md`：由"计划文件"改为"已实现文件 + 运行方式"
+- `README.md`：安装章节补充 venv/requirements 现状，状态章节更新
+
+### Decided
+
+- **测试运行器：标准库 `unittest`**（而非 pytest）。理由：零第三方依赖，符合"依赖最小化"原则；当前断言与夹具需求用 unittest 即可充分表达。若将来出现参数化测试、夹具组合等明确痛点，再评估 pytest 并在本文件记录理由。
+- **状态机语义**：同状态写入视为无操作（幂等）；`FAILED` 允许重入流水线以支持 `retry`；`COMPLETED` 为终态。
+- **部分更新语义**：输入结构中 `None` 表示"本次未提供"，不覆盖库中已有值；由此 `MediaRecord.download_status` 与 `ExternalLinkRecord.fetch_status` 的默认值由 `PENDING` 改为 `None`。
+- **时间戳语义**：`last_synced_at` 只在 sync 写入（`upsert_bookmark`）时更新，状态流转不改它，避免"同步时间"与"处理时间"混淆。
+
+### Fixed
+
+- 幂等缺陷：媒体/外链的 `download_status` / `fetch_status` 默认值会被误判为显式提供，导致重复 upsert 重置已 `DOWNLOADED` / `FETCHED` 的状态 → 改为 `None` 默认 + `_status_value()` 回退，并补 2 条回归测试
+- `tests/test_database.py` 漏导入 `parse_status`
+
+### Deferred
+
+- Collector、CLI、Markdown、媒体、外链抓取均未开始；Phase 5 四项前置条件仍全部未满足
+- YAML 解析依赖仍未决定（`requirements.txt` 已注明决定时间点）
+
+### Verification
+
+```text
+.venv\Scripts\python.exe -m unittest discover -s tests -t .
+Ran 68 tests in 2.71s
+OK        (exit 0)
+```
+
+---
+
+## [Phase 3] 2026-09-15 — 建立项目骨架
+
+### Added
+
+- 目录骨架：`config/` `docs/` `research/` `src/{collector,ingest,processor,media,external/handlers,markdown,database,scheduler,cli}` `data/{raw,state,logs}` `knowledge/X-Bookmarks` `tests/` `scripts/`
+- `AGENTS.md`：项目级 Agent 规范，声明对上级 `01_Knowledge-Agent/AGENT.md` 的继承与冲突裁决顺序
+- `README.md`：项目说明（目标 / 架构 / 安装 / 配置 / 认证 / 同步 / 调度 / 故障排查 / 安全 / 开发）
+- `PLAN.md`：阶段进度、Phase 5 硬性前置条件、技术栈决策表、里程碑、风险登记
+- `CHANGELOG.md`：本文件
+- `.gitignore`：敏感信息、程序数据、数据库、日志、虚拟环境等忽略规则
+- `config/.gitignore`：白名单式忽略（仅保留模板与说明）
+- `config/config.example.yaml`：完整配置模板（含认证方式、采集开关、媒体、外链、AI、调度、安全开关）
+- `config/README.md`、`knowledge/X-Bookmarks/README.md`、`tests/README.md`、`scripts/README.md`：目录职责说明
+- `data/raw/.gitkeep`、`data/state/.gitkeep`、`data/logs/.gitkeep`
+- `data/environment-report.md`：指向 `docs/environment-report.md` 的指针（满足执行计划 §三的输出路径要求，同时避免权威文档落在被忽略的 `data/` 中）
+- `src/__init__.py` 及各子包 `__init__.py`：仅声明职责，**不含任何实现**（按执行计划 Step 5，不开始实现 Collector）
+
+### Decided
+
+- 技术路线：`fieldtheory` CLI 作 Collector（Adapter 隔离）+ 其余自研（用户于 2026-09-15 批准）
+- 项目根路径修正为 `01_Knowledge-Agent/...`（执行计划原文的 `02-Knowledge-Agent` 不存在）
+- 解释器选 Python 3.12.13 建 venv（默认 3.14.3 过新）
+- 知识库终点改为"项目内产出 → 交接上级 `inbox/X-Bookmarks/`"，不直接写上级 `knowledge/`
+- 仅创建 `.gitignore`，**不执行 `git init`**（待用户授权）
+
+### Deferred
+
+- 数据库 schema、Collector、CLI 实现均不在此阶段进行
+- `scripts/*.ps1`（调度器安装/卸载）留待 Phase 13
+- 配置解析器与依赖选型留待 Phase 4
+
+---
+
+## [Phase 2] 2026-09-15 — 确定采集策略
+
+### Added
+
+- `research/architecture-decision.md`：候选方案（A–E）对比与排除理由、数据流与边界、上游字段映射（待样本确认）、认证方案、调度方案、复用/自研边界、风险与缓解、待确认事项、复审触发条件
+
+### Decided
+
+- 采用执行计划"第二优先"：成熟项目作为 Collector
+- Collector 选 `fieldtheory`（MIT / 活跃 / CLI / 本机已装验证 / 产物可 ingest）
+- TweetKB 降为备选与设计参考；自研 GraphQL Collector 仅作最后兜底
+- 本项目不实现 Cookie 解密（属上游职责），以便上游修复后零改动受益
+
+### Fixed
+
+- 修正执行计划中对"整体复用"（第一优先）的隐含预期：现有项目均为扩展/桌面形态或规范冲突，第一优先实际不可行
+
+---
+
+## [Phase 1] 2026-09-15 — GitHub 开源项目技术评估
+
+### Added
+
+- `research/open-source-comparison.md`：9 个候选项目的元数据、能力矩阵、逐项目分析、适配度排序、未决问题清单
+
+### Findings
+
+- `xmarks` 无法解析：Xmarks 是 2018 年停服的浏览器书签同步服务，与 X 书签无关
+- `SaveBox`、`twitter-bookmark-archiver` **无 LICENSE 文件** → 不可复用
+- `XClipper` 为 **PolyForm Noncommercial** 许可 → 不可商用二开
+- `MarkHarbor` / `xarchive` / `twitter-web-exporter` 为扩展形态 → 无法无人值守
+- `TweetKB` 架构最接近目标（SQLite+FTS5+`status_id` 去重+`content_hash`+导出适配器+测试），但 Windows 采集未声明
+- `fieldtheory-cli`（2020 stars、MIT、活跃、CLI 完整、本机已装）为最佳 Collector 候选
+
+### Notes
+
+- 本阶段未 clone 源码（本机无 git 身份），凡未经源码确认的项均标注 `待验证`
+
+---
+
+## [Phase 0] 2026-09-15 — 检查现有项目环境
+
+### Added
+
+- `docs/environment-report.md`：OS / 磁盘 / Python / Node / Git / 目录结构 / 既有规范 / 可复用组件 / 冲突与风险 / 偏差记录 / 复现命令
+
+### Findings
+
+- 执行计划指定路径 `02-Knowledge-Agent` 不存在，实际为 `01_Knowledge-Agent`
+- 目标目录 `projects/X-Bookmark-Knowledge` 已存在且为空
+- Lab 内无 git 仓库、无 Obsidian Vault、无既有 Skills；git 未配置 `user.name`/`user.email`
+- 默认 Python 3.14.3，另有 uv 管理的 3.12.13（`uv` 不在 PATH）
+- `C:` 仅剩 6.4 GB，`D:` 剩 323.2 GB
+- **Chrome 155 的 x.com Cookie 为 `v20`（App-Bound Encryption），`fieldtheory@1.3.22` 只支持 `v10`/裸 DPAPI → 会话采集失败**（已用代码与实测双重确认）
+
+### Fixed
+
+- 记录并纠正执行计划的三处与实际不符：项目路径、`data/environment-report.md` 与 `.gitignore` 的冲突、知识库终点与上级 Inbox 规范的冲突
