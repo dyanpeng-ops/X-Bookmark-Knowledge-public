@@ -556,3 +556,20 @@ class LinkTitleAsNoteTitleTests(unittest.TestCase):
         text = render_markdown(up, None, RenderOptions(),
                                link_details={"https://example.com/a": {"title": "外链标题"}})
         self.assertIn("# 这是一条有真实正文的推文", text)
+
+
+class InvestTagTimePropertyTests(unittest.TestCase):
+    """用户要求：投资理财（及财经相关）标签的书签，frontmatter 带推文时间属性。"""
+
+    UP = {"tweetId": "1", "text": "纳指定投策略", "media": [], "links": [],
+          "postedAt": "Thu Sep 13 01:24:21 +0000 2026"}
+
+    def test_invest_tag_gets_posted_at(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        text = render_markdown(self.UP, None, RenderOptions(), tags=["投资理财"])
+        self.assertIn("posted_at: 2026-09-13T01:24:21Z", text)
+
+    def test_non_finance_tag_has_no_posted_at(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        text = render_markdown(self.UP, None, RenderOptions(), tags=["AI工具"])
+        self.assertNotIn("posted_at:", text)

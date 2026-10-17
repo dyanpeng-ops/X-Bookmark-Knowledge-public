@@ -46,6 +46,7 @@ YEAR_MONTH_LAYOUT = "year_month"
 FRONTMATTER_KEYS: tuple[str, ...] = (
     "title",
     "tags",
+    "posted_at",
 )
 
 #: `## external_links` 段落里显示的状态标签（Phase 9）；`PENDING` 不显示备注。
@@ -580,6 +581,11 @@ def render_markdown(
             frontmatter["title"] = zh_title
         if tags:
             frontmatter["tags"] = list(tags)[:3]     # 队列 #28：预设标签，1–3 个
+            # 用户要求：**投资理财**类书签额外带「推文时间」属性（便于按时间复盘行情）
+            if "投资理财" in list(tags) or "美股QDII" in list(tags) or "宏观经济" in list(tags):
+                posted = _iso_created_at(upstream)
+                if posted:
+                    frontmatter["posted_at"] = posted
         lines = ["---"]
         for key in FRONTMATTER_KEYS:
             if key in frontmatter:
