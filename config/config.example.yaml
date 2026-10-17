@@ -67,7 +67,7 @@ collector:
     skip_profile_images: true      # 归档通常不需要作者头像
     # 2026-09-16 实测：--gaps 会富化 linked article（写入上游 DB，JSONL 只新增 textExpandedAt）；
     # Article 正文需通过 `fieldtheory list --json` / `show <id> --json` 读取。
-    gaps: false
+    gaps: true 
     folders: false                 # 是否同步书签文件夹归属
     max_minutes: 30
     delay_ms: 600

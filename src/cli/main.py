@@ -820,7 +820,7 @@ def _cmd_links(args: argparse.Namespace, config: AppConfig) -> int:
 
         cover_conn = connect(config.paths.state_db_path)
         try:
-            cover_stats = fill_link_covers(cover_conn, knowledge_dir)
+            cover_stats = fill_link_covers(cover_conn, config.paths.knowledge_dir)
         finally:
             cover_conn.close()
         if cover_stats.get("candidates"):
