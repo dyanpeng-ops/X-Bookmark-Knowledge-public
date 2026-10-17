@@ -187,7 +187,9 @@ def _looks_like_bare_link(text: str) -> bool:
 
 
 def derive_title(
-    upstream: Mapping[str, Any], enrichment: Mapping[str, Any] | None = None
+    upstream: Mapping[str, Any],
+    enrichment: Mapping[str, Any] | None = None,
+    link_title: str | None = None,
 ) -> str | None:
     """给出可读标题（队列 #27 ②，用户选 A：允许**派生标签**，但绝不冒充原文标题）。
 
@@ -207,6 +209,10 @@ def derive_title(
         first = re.split(r"[。！？!?\n]", text, maxsplit=1)[0].strip()
         if first:
             return first[:40] + ("…" if len(first) > 40 else "")
+    # 队列 #30 审计更新：纯链书签无可用标题时，用**外链自身标题**（og:title/<title>）当标题
+    external = str(link_title or "").strip()
+    if external:
+        return external[:80]
     author = str(upstream.get("authorName") or upstream.get("authorHandle") or "").strip()
     created = _iso_created_at(upstream) or ""
     day = created[:10] if created else ""
@@ -582,7 +588,13 @@ def render_markdown(
         parts.append("\n".join(lines))
 
     # 队列 #27 ②：正文前加可读标题（真实标题优先，纯链接类用派生标签；有译文标题则用译文）
-    doc_title = zh_title or derive_title(upstream, enrichment)
+    first_link_title = ""
+    for _url, _detail in (link_details or {}).items():
+        _title = str((_detail or {}).get("title") or "").strip()
+        if _title:
+            first_link_title = _title
+            break
+    doc_title = zh_title or derive_title(upstream, enrichment, first_link_title)
     if doc_title:
         parts.append(f"# {doc_title}")
 

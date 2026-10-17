@@ -537,3 +537,22 @@ class TagsRenderTests(unittest.TestCase):
         up = {"tweetId": "1", "text": "正文", "media": [], "links": []}
         text = render_markdown(up, None, RenderOptions())
         self.assertNotIn("tags:", text)
+
+
+class LinkTitleAsNoteTitleTests(unittest.TestCase):
+    """#30 审计更新：纯链书签无可用标题时，用外链自身标题当笔记标题。"""
+
+    def test_link_title_used_when_tweet_has_no_title(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        up = {"tweetId": "1", "text": "https://t.co/abc", "media": [], "links": ["https://example.com/a"]}
+        text = render_markdown(up, None, RenderOptions(),
+                               link_details={"https://example.com/a": {"title": "真实外链标题"}})
+        self.assertIn("# 真实外链标题", text)
+
+    def test_prose_title_wins_over_link_title(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        up = {"tweetId": "1", "text": "这是一条有真实正文的推文，讲的是别的事情。", "media": [],
+              "links": ["https://example.com/a"]}
+        text = render_markdown(up, None, RenderOptions(),
+                               link_details={"https://example.com/a": {"title": "外链标题"}})
+        self.assertIn("# 这是一条有真实正文的推文", text)

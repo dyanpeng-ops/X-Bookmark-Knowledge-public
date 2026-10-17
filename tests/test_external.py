@@ -1533,3 +1533,129 @@ class OgImageExtractionTests(unittest.TestCase):
     def test_missing_returns_none(self):
         from src.external.fetcher import extract_og_image
         self.assertIsNone(extract_og_image("<html><body>hi</body></html>", "https://e.com"))
+
+
+class CoverDownloadTests(unittest.TestCase):
+    """队列 #30：封面下载 —— 成功落盘、失败/非图片降级返回 None（不抛不阻断）。"""
+
+    def _serve(self, payload: bytes, content_type: str, path: str = "/cover.png"):
+        import threading, http.server
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            def log_message(self, *a): return
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}{path}"
+
+    def test_downloads_image(self):
+        import tempfile
+        from pathlib import Path as _P
+        from src.external.covers import download_cover
+        url = self._serve(b"\x89PNG-fake-bytes", "image/png")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = download_cover(url, _P(tmp))
+            self.assertIsNotNone(path)
+            self.assertTrue(path.is_file())
+            self.assertTrue(path.name.endswith(".cover.png"))
+
+    def test_non_image_content_type_degrades(self):
+        import tempfile
+        from pathlib import Path as _P
+        from src.external.covers import download_cover
+        url = self._serve(b"<html>no image</html>", "text/html", path="/page")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(download_cover(url, _P(tmp).joinpath("none")))
+
+    def test_bad_url_degrades(self):
+        import tempfile
+        from pathlib import Path as _P
+        from src.external.covers import download_cover
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(download_cover("not-a-url", _P(tmp)))
+            self.assertIsNone(download_cover("http://127.0.0.1:9/x.png", _P(tmp), timeout=1))
+
+
+class AttachLinkCoversTests(unittest.TestCase):
+    """队列 #30：为已下载的封面注入 image_path（双层结构，vault 相对）；无封面时原样返回。"""
+
+    def test_attaches_when_cover_exists(self):
+        import hashlib, tempfile
+        from pathlib import Path as _P
+        from src.cli.main import _attach_link_covers
+
+        url = "https://example.com/post"
+        image_url = "https://cdn.example.com/cover.png"
+        digest = hashlib.sha256(image_url.encode()).hexdigest()[:16]
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = _P(tmp) / "knowledge"
+            links_dir = vault / "X-Bookmarks" / "2026" / "09" / "assets" / "6000" / "links"
+            links_dir.mkdir(parents=True)
+            (links_dir / f"{digest}.cover.png").write_bytes(b"x")
+            out = _attach_link_covers(
+                vault / "X-Bookmarks", {"6000": {url: {"title": "示例", "image_url": image_url}}}
+            )
+            self.assertEqual(
+                out["6000"][url]["image_path"],
+                f"X-Bookmarks/2026/09/assets/6000/links/{digest}.cover.png",
+            )
+
+    def test_no_cover_keeps_detail_unchanged(self):
+        import tempfile
+        from pathlib import Path as _P
+        from src.cli.main import _attach_link_covers
+
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = _P(tmp) / "knowledge"
+            (vault / "X-Bookmarks").mkdir(parents=True)
+            out = _attach_link_covers(
+                vault / "X-Bookmarks", {"6000": {"https://e.com/a": {"title": "T"}}}
+            )
+            self.assertNotIn("image_path", out["6000"]["https://e.com/a"])
+
+
+
+class FillLinkCoversTests(unittest.TestCase):
+    """队列 #30：og:image → 下载 → 落库（增量、逐条隔离）。"""
+
+    def test_pipeline_downloads_and_persists(self):
+        import sqlite3, tempfile, threading, http.server
+        from pathlib import Path as _P
+        from src.external.covers_pipeline import fill_link_covers
+
+        page_html = b'<html><head><meta property="og:image" content="/c.png"></head></html>'
+        image = b"\x89PNG-fake"
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = image if self.path.endswith(".png") else page_html
+                ctype = "image/png" if self.path.endswith(".png") else "text/html; charset=utf-8"
+                self.send_response(200); self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+            def log_message(self, *a): return
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close); self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = sqlite3.connect(":memory:")
+            conn.execute("CREATE TABLE bookmarks (tweet_id TEXT, created_at TEXT)")
+            conn.execute("CREATE TABLE external_links (tweet_id TEXT, url TEXT, resolved_url TEXT, image_url TEXT, fetch_status TEXT)")
+            conn.execute("INSERT INTO bookmarks VALUES ('6000','2026-09-14T01:24:21Z')")
+            conn.execute("INSERT INTO external_links VALUES ('6000', ?, ?, NULL, 'FETCHED')", (base + "/post", base + "/post"))
+            stats = fill_link_covers(conn, _P(tmp) / "knowledge", timeout=5)
+            self.assertEqual(stats["downloaded"], 1)
+            row = conn.execute("SELECT image_url FROM external_links").fetchone()
+            self.assertTrue(row[0].startswith(base))
+            covers = list((_P(tmp) / "knowledge").rglob("*.cover.png"))
+            self.assertEqual(len(covers), 1)

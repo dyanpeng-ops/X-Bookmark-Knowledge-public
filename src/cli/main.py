@@ -374,6 +374,10 @@ def _cmd_process(args: argparse.Namespace, config: AppConfig) -> int:
     media_paths = _local_media_paths(config, tweet_ids)
     # Phase 9：同理，只有知识库内的外链正文才会被 `## external_links` 引用。
     link_details = _local_link_details(config, tweet_ids)
+    # 队列 #30：把已下载的链接封面挂进 link_details（vault 相对路径，供渲染层出封面卡）
+    link_details = _attach_link_covers(
+        knowledge_dir, link_details, config.paths.state_db_path
+    )
 
     # 队列 #24 A 阶段：为每张配图生成**可检索描述**（本地 OCR，零 API 花费、数据不出本机）。
     # 增量：按图片内容 sha256 缓存（data/state/media-descriptions.json），已描述的不重跑。
@@ -471,6 +475,57 @@ def _local_media_paths(config: AppConfig, tweet_ids: Sequence[str]) -> dict[str,
         connection.close()
     return found
 
+
+def _attach_link_covers(
+    knowledge_dir: str | Path,
+    link_details: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    state_db_path: str | Path | None = None,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """队列 #30：为每条外链找到**已下载的封面**并注入 `image_path`（vault 相对）。
+
+    入参/返回均为 **双层结构** `{tweet_id: {url: detail}}`（与 `_local_link_details` 一致）。
+    封面文件名按 **图片 URL** 的 sha256[:16] 生成（与 `src.external.covers` 一致）；
+    找不到/读不到 ⇒ 原样返回（**无封面不阻断、不伪造**）。
+    """
+
+    import hashlib
+
+    root = Path(knowledge_dir).parent          # vault 根（knowledge/）
+    image_urls: dict[str, str] = {}
+    if state_db_path is not None:
+        try:
+            from src.database import connect as _connect
+
+            _conn = _connect(state_db_path)
+            try:
+                image_urls = {
+                    str(url): str(img)
+                    for url, img in _conn.execute(
+                        "SELECT url, image_url FROM external_links "
+                        "WHERE image_url IS NOT NULL AND image_url <> ''"
+                    )
+                }
+            finally:
+                _conn.close()
+        except Exception:  # noqa: BLE001 - 取不到就退回页面 URL hash
+            image_urls = {}
+
+    attached: dict[str, dict[str, dict[str, Any]]] = {}
+    for tweet_id, per_tweet in link_details.items():
+        attached[str(tweet_id)] = {}
+        for url, detail in per_tweet.items():
+            info = dict(detail)
+            image_url = str(info.get("image_url") or "").strip() or image_urls.get(str(url), "").strip()
+            if image_url:
+                digest = hashlib.sha256(image_url.encode("utf-8")).hexdigest()[:16]
+                matches = list(root.glob(f"**/links/{digest}.cover.*"))
+                if matches and matches[0].is_file():
+                    try:
+                        info["image_path"] = matches[0].relative_to(root).as_posix()
+                    except ValueError:
+                        pass
+            attached[str(tweet_id)][str(url)] = info
+    return attached
 
 def _local_media_captions(
     config: AppConfig,
@@ -759,6 +814,25 @@ def _cmd_links(args: argparse.Namespace, config: AppConfig) -> int:
     print(f"  failed        : {stats.failed}")
     for label, message in stats.errors[:5]:
         print(f"[fail] {label}: {message}", file=sys.stderr)
+    # 队列 #30：为已抓取的外链补封面（og:image → 下载 → 落库；失败降级、不阻断）
+    try:
+        from src.external.covers_pipeline import fill_link_covers
+
+        cover_conn = connect(config.paths.state_db_path)
+        try:
+            cover_stats = fill_link_covers(cover_conn, knowledge_dir)
+        finally:
+            cover_conn.close()
+        if cover_stats.get("candidates"):
+            print(
+                "  covers        : "
+                f"candidates={cover_stats['candidates']}, "
+                f"downloaded={cover_stats['downloaded']}, "
+                f"failed={cover_stats['failed']}"
+            )
+    except Exception as exc:  # noqa: BLE001 - 封面补齐失败不该让 links 失败
+        logger.warning("link cover fill skipped: %s", exc)
+
     return EXIT_OK if stats.ok else EXIT_FAILURE
 
 

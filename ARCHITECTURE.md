@@ -674,3 +674,21 @@ X-Bookmark-Knowledge/
 - **增量**：描述以图片内容 **sha256** 为键缓存于 `data/state/media-descriptions.json`（gitignored）；
 - **不阻断**：任一环节失败只影响该图，不影响整篇 Markdown 生成；
 - **排版**：图片内嵌在 `## tweet` 正文之后、多图同行，caption 为纯文本 ⇒ 可被全文检索。
+
+
+---
+
+## 外链封面卡管线（队列 #30 / F-BYNLUY-01，2026-10-17）
+
+```text
+外链 (FETCHED, 无封面)
+  → GET 页面 → extract_og_image(og:image / og:image:secure_url / twitter:image)
+  → download_cover() → assets/<tweet_id>/links/<图片URL sha256[:16]>.cover.<ext>
+  → 回写 external_links.image_url
+  → _attach_link_covers() 找本地封面 → 注入 image_path（vault 相对）
+  → ## external_links 渲染 `![封面](…)` ＋ 标题卡片
+```
+
+- **全本地**：封面下载为普通 HTTP GET（无云端依赖）；失败/非图片/超限 ⇒ **降级为纯标题卡片**（不阻断、不伪造）；
+- **增量**：只处理"已抓取但无封面"的外链；同一 URL 封面文件名稳定（幂等）；
+- **目录一致**：复用既有 `年/月/assets/<tweet_id>/links/` 布局与 vault 相对路径约定。

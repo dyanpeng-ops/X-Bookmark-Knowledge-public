@@ -36,6 +36,33 @@
 
 ---
 
+## [Phase 10 · md 阅读体验] 2026-10-17 — **F-BYNLUY-01 封面卡闭环（3/4 → 4/4）**
+
+> 触发：队列 #30（审计补充）。此前已有 og:image 提取 / 卡片渲染 / DB image_url 列，缺抓取层接线。
+
+### Added
+
+- **`src/external/covers.py`**：`download_cover()` —— 落 `assets/<tweet>/links/<图片URL sha256[:16]>.cover.<ext>`；
+  纯 stdlib、timeout 20s、5MB 上限、原子写；**失败一律返回 None（不抛不阻断不伪造）**。
+- **`src/external/covers_pipeline.py`**：`fill_link_covers()` —— 增量处理"已抓取但无封面"的外链：
+  GET 页面 → `extract_og_image` → `download_cover` → 回写 `external_links.image_url`；逐条隔离。
+- **`_attach_link_covers()`**（CLI）：按 `image_url` 的 sha256 找本地封面，注入 `image_path`（vault 相对）。
+- `links` 命令末尾调用封面管线（失败降级只 warning）。
+
+### Fixed（三个实测定位的 bug）
+
+1. `links` 里 `conn` 不在作用域 ⇒ 改用独立连接；
+2. 封面**命名**用图片 URL 的 hash、**查找**却用页面 URL ⇒ 改为统一用 `image_url` 的 hash；
+3. `link_details` 是**双层结构** `{tweet_id: {url: detail}}` ⇒ `_attach_link_covers` 改为双层遍历。
+
+### Verified
+
+- 实跑：`candidates 19 → with_image_url 14 → downloaded 10`，**10 张封面落盘**；
+- 重渲染 **8 篇**笔记出现 `![封面](X-Bookmarks/…/links/….cover.png)`；
+- 测试 **750 用例全绿**。
+
+---
+
 ## [Phase 10 · md 阅读体验] 2026-10-17 — **按书签标题命名文件**（用户要求）
 
 > 触发：用户「把这种命名（`YYYYMMDD-<tweet_id>.md`）全部改成具体书签标题」。
