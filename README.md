@@ -453,7 +453,7 @@ powershell -ExecutionPolicy Bypass -File scripts\uninstall-scheduler.ps1
 | 5 Collector（上游适配） | ✅ 完成（2026-09-16）：`src/collector/`（`base.py` / `contract.py` / `fieldtheory_adapter.py`）+ 76 用例；前置条件 A–D 全部用真实数据关闭 |
 | 6 增量同步 + CLI | ✅ 完成（2026-09-16）：`src/config.py`（PyYAML）+ `src/ingest/` + `src/cli/`（sync/status/doctor）+ 60 用例；**M2 幂等达成** |
 | 7 逐条 Markdown 生成 | ✅ 完成（2026-09-17）：`src/markdown/`（render + writer）+ `process` 子命令 + 23 用例；**M3 达成**（真实 5 条，二次运行 `written: 0 / unchanged: 5`） |
-| 8 媒体本地化 | ✅ 完成（2026-09-20）：`src/media/localizer.py` + `media` 子命令 + 44 用例；6/6 真实媒体本地化、`media.local_path` 归一至知识库内、`## media` 引用本地相对路径（ADR-016） |
+| 8 媒体本地化 | ✅ 完成（2026-09-20）：`src/media/localizer.py` + `media` 子命令 + 44 用例；6/6 真实媒体本地化、`media.local_path` 归一至知识库内、图片引用知识库内本地相对路径（ADR-016；队列 #24 起图片**内嵌**在正文之后，不再有独立 `## media` 段） |
 | 9 外链正文抽取 | ✅ 实现完毕 + 复审关闭（2026-09-21）：fetcher + handlers + resolver + netguard（SSRF 逐跳防护），canonical 入库；94 用例经批准全绿。代码已提交（`78ed077`）；真实数据写运行仍待批准（ADR-017/018）。2026-10-09 依第三方审计修复 CFG-01（`LinkResolver` 默认分支漏传安全配置），SEC-01（DNS 重绑定）待决策 |
 | 10+ 完整性 / AI / 交接 / 调度 | ⏳ 未开始 |
 
