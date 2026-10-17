@@ -70,10 +70,10 @@ ENRICH = {
 }
 
 
-def render(overrides=None, enrich=None):
+def render(overrides=None, enrich=None, **kwargs):
     up = dict(UPMAP)
     up.update(overrides or {})
-    return render_markdown(up, enrich, RenderOptions())
+    return render_markdown(up, enrich, RenderOptions(), **kwargs)
 
 
 class RenderTests(unittest.TestCase):
@@ -112,22 +112,61 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(fm["tags"], ["tag1"])
 
     def test_sections_are_rendered(self):
+        """队列 #24 起：`media` **不再是独立段落**，图片内嵌在 `## tweet` 之后。"""
+
         text = render()
-        for section in ("## tweet", "## media", "## external_links", "## metadata", "## source"):
+        for section in ("## tweet", "## external_links", "## metadata", "## source"):
             self.assertIn(section, text)
+        self.assertNotIn("## media", text)
         self.assertIn("> 第一行", text)
         self.assertIn("> 第二行", text)
         self.assertIn("https://pbs.twimg.com/media/AAA.png", text)
         self.assertIn("https://example.com/a", text)
+
+    def test_media_is_inline_after_tweet_text(self):
+        """图片紧跟正文（`## tweet` 内、`## thread` 之前），而不是独立段。"""
+
+        text = render()
+        tweet_at = text.index("## tweet")
+        image_at = text.index("![")
+        thread_at = text.index("## thread")
+        self.assertLess(tweet_at, image_at)
+        self.assertLess(image_at, thread_at)
+
+    def test_media_captions_rendered_and_searchable(self):
+        """caption = alt 文本（首行）＋ 引用块（OCR 文字）⇒ 纯文本、可检索。"""
+
+        class _Desc:
+            alt_text = "截图标题：粘贴链接"
+            has_text = True
+            caption = "截图标题：粘贴链接\n第二行说明"
+
+        text = render(media_captions={"https://pbs.twimg.com/media/AAA.png": _Desc()})
+        self.assertIn("![截图标题：粘贴链接]", text)
+        self.assertIn("> 🖼 图 1：截图标题：粘贴链接", text)
+        self.assertIn("> 第二行说明", text)
+
+    def test_media_multiple_side_by_side_on_one_line(self):
+        """多图并排 ⇒ 所有 `![]()` 写在同一行。"""
+
+        text = render({"media": ["https://pbs.twimg.com/media/A.png",
+                                 "https://pbs.twimg.com/media/B.png"]})
+        image_lines = [line for line in text.split("\n") if line.startswith("![")]
+        self.assertEqual(len(image_lines), 1, image_lines)
+        self.assertEqual(image_lines[0].count("!["), 2, image_lines)
+
+    def test_media_placeholder_when_none(self):
+        """无媒体 ⇒ **不渲染任何图片块**（旧版会给 `_无媒体_` 占位段）。"""
+
+        text = render({"media": []})
+        self.assertNotIn("![", text)
+        self.assertNotIn("## media", text)
 
     def test_article_section_only_when_enrichment_present(self):
         self.assertIn("_未展开文章_", render(enrich=None))
         text = render(enrich=ENRICH)
         self.assertIn("## 文章标题：测试文章", text)
         self.assertIn("这是文章正文。", text)
-
-    def test_media_placeholder_when_none(self):
-        self.assertIn("_无媒体_", render({"media": []}))
 
     def test_links_are_deduplicated_in_section(self):
         text = render()

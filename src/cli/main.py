@@ -373,6 +373,10 @@ def _cmd_process(args: argparse.Namespace, config: AppConfig) -> int:
     # Phase 9：同理，只有知识库内的外链正文才会被 `## external_links` 引用。
     link_details = _local_link_details(config, tweet_ids)
 
+    # 队列 #24 A 阶段：为每张配图生成**可检索描述**（本地 OCR，零 API 花费、数据不出本机）。
+    # 增量：按图片内容 sha256 缓存（data/state/media-descriptions.json），已描述的不重跑。
+    media_captions, description_stats = _local_media_captions(config, knowledge_dir, media_paths)
+
     writer = MarkdownWriter(
         knowledge_dir,
         raw_dir=config.paths.raw_dir,
@@ -380,12 +384,21 @@ def _cmd_process(args: argparse.Namespace, config: AppConfig) -> int:
         status_updater=None if args.no_status else status_updater,
         media_lookup=media_paths.get,
         link_lookup=link_details.get,
+        media_captions=media_captions.get,
     )
     stats = writer.run(tweet_ids)
 
     print("Markdown report")
     print(f"  knowledge dir : {knowledge_dir}")
     print(f"  local media   : {len(media_paths)} bookmark(s)")
+    print(
+        "  img captions  : "
+        f"{len(media_captions)} bookmark(s) "
+        f"(ocr={description_stats.get('ocr', 0)}, "
+        f"no-text={description_stats.get('no_text', 0)}, "
+        f"cached={description_stats.get('hit', 0)}, "
+        f"failed={description_stats.get('failed', 0)})"
+    )
     print(f"  links known   : {len(link_details)} bookmark(s)")
     print(f"  attempted     : {stats.attempted}")
     print(f"  written       : {stats.written}")
@@ -428,6 +441,54 @@ def _local_media_paths(config: AppConfig, tweet_ids: Sequence[str]) -> dict[str,
     finally:
         connection.close()
     return found
+
+
+def _local_media_captions(
+    config: AppConfig,
+    knowledge_dir: str | Path,
+    media_paths: Mapping[str, Mapping[str, str]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    """队列 #24 A 阶段：为每张配图生成**可检索描述**（本地 OCR ＋ 增量缓存）。
+
+    返回 ``({tweet_id: {source_url: MediaDescription}}, stats)``。
+
+    设计取舍（对应任务约束）：
+
+    * **零 API 花费 / 数据不出本机**：只调用本机 macOS Vision（``src.media.vision_ocr``）；
+    * **增量**：缓存键是图片内容 SHA-256（``data/state/media-descriptions.json``），
+      内容不变就不重跑；
+    * **不阻断**：OCR 不可用/失败 ⇒ 该图如实标记"未识别到文字"，渲染照常进行（**不伪造**）。
+    """
+
+    from src.media.descriptions import MediaDescriptionStore
+
+    empty = {"hit": 0, "ocr": 0, "no_text": 0, "failed": 0}
+    try:
+        store = MediaDescriptionStore(root=config.project_root)
+        store.load()
+    except Exception as exc:  # noqa: BLE001 - 描述层故障不该阻断 Markdown 生成
+        logger.warning("media description store unavailable: %s", exc)
+        return {}, empty
+
+    captions: dict[str, dict[str, Any]] = {}
+    root = Path(knowledge_dir)
+    for tweet_id, mapping in media_paths.items():
+        per_tweet: dict[str, Any] = {}
+        for url, rel in mapping.items():
+            local = Path(rel)
+            if not local.is_absolute():
+                local = root / rel
+            try:
+                per_tweet[str(url)] = store.describe(local)
+            except (OSError, FileNotFoundError) as exc:
+                logger.warning("captions skipped for %s: %s", local, exc)
+        if per_tweet:
+            captions[tweet_id] = per_tweet
+    try:
+        store.save()
+    except OSError as exc:  # noqa: BLE001
+        logger.warning("failed to persist media descriptions: %s", exc)
+    return captions, dict(store.stats)
 
 
 def _cmd_media(args: argparse.Namespace, config: AppConfig) -> int:

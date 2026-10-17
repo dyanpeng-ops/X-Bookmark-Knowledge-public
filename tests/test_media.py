@@ -7,7 +7,7 @@
 * 源路径归一（独立审计的前置条件）：旧缓存绝对路径、上游清单索引、已本地化行、源缺失。
 * 跳过规则：`media.download=false`、视频开关、`max_bytes`、上游未下载。
 * 落库意图：成功写本地路径、跳过只记原因、失败记 `error_message` + `attempts`。
-* Markdown：`## media` 引用本地相对路径，未命中回退远程 URL（不丢信息）。
+* Markdown：图片**内嵌在正文之后**并引用本地相对路径；未命中回退远程 URL（不丢信息）。
 * CLI 端到端（离线桩 + 临时目录）：`sync → media → process` 全链路、二次运行幂等、
   `--dry-run` 不落盘，以及"再次 sync 不会把本地路径改回旧缓存路径"。
 
@@ -389,16 +389,16 @@ class MediaSectionRenderTests(unittest.TestCase):
             RenderOptions(),
             media_files={PHOTO_URL: "assets/6000/abc.png"},
         )
-        self.assertIn("![](assets/6000/abc.png)", text)
+        self.assertIn("](assets/6000/abc.png)", text)
         self.assertNotIn(PHOTO_URL, text)
 
     def test_media_section_falls_back_to_remote_url(self):
         text = render_markdown(RENDER_UPSTREAM, None, RenderOptions(), media_files={})
-        self.assertIn(f"![]({PHOTO_URL})", text)
+        self.assertIn(f"]({PHOTO_URL})", text)
 
     def test_default_call_keeps_phase7_behaviour(self):
         text = render_markdown(RENDER_UPSTREAM, None, RenderOptions())
-        self.assertIn(f"![]({PHOTO_URL})", text)
+        self.assertIn(f"]({PHOTO_URL})", text)
 
 
 
@@ -440,13 +440,13 @@ class WriterMediaLookupTests(MediaTestCase):
         asset = self._asset()
         stats = self._writer(lambda tweet_id: {PHOTO_URL: str(asset)}).run(["6000"])
         self.assertEqual(stats.written, 1)
-        self.assertIn("![](assets/6000/abc.png)", self._content())
+        self.assertIn("](assets/6000/abc.png)", self._content())
 
     def test_knowledge_relative_lookup_path_is_accepted(self):
         self._archive("6000")
         self._asset()
         self._writer(lambda tweet_id: {PHOTO_URL: "2026/09/assets/6000/abc.png"}).run(["6000"])
-        self.assertIn("![](assets/6000/abc.png)", self._content())
+        self.assertIn("](assets/6000/abc.png)", self._content())
 
     def test_lookup_failure_falls_back_to_remote_url(self):
         self._archive("6000")
@@ -456,7 +456,7 @@ class WriterMediaLookupTests(MediaTestCase):
 
         stats = self._writer(broken).run(["6000"])
         self.assertEqual(stats.written, 1)
-        self.assertIn(f"![]({PHOTO_URL})", self._content())
+        self.assertIn(f"]({PHOTO_URL})", self._content())
 
     def test_cross_drive_lookup_path_does_not_fail_the_record(self):
         """无法计算相对路径时保留原路径，记录仍然写成功（单条失败隔离）。
@@ -474,7 +474,7 @@ class WriterMediaLookupTests(MediaTestCase):
             with mock.patch("os.path.relpath", side_effect=ValueError("cross-drive")):
                 stats = self._writer(lambda tweet_id: {PHOTO_URL: lookup}).run(["6000"])
         self.assertEqual((stats.written, stats.failed), (1, 0))
-        self.assertIn(f"![]({lookup})", self._content())
+        self.assertIn(f"]({lookup})", self._content())
 
 
 class CliMediaTestCase(unittest.TestCase):
@@ -648,7 +648,7 @@ class ProcessMediaIntegrationTests(CliMediaTestCase):
 
         text = self.markdown_file().read_text(encoding="utf-8")
         key = media_key_for(PHOTO_URL)
-        self.assertIn(f"![](assets/{PHOTO_TWEET}/{key}.png)", text)
+        self.assertIn(f"](assets/{PHOTO_TWEET}/{key}.png)", text)
         self.assertNotIn(PHOTO_URL, text)
 
     def test_process_without_media_keeps_remote_urls(self):

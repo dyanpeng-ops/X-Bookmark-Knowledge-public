@@ -55,6 +55,7 @@ class MarkdownWriter:
         status_updater: Callable[[str, str, str | None], None] | None = None,
         media_lookup: Callable[[str], Mapping[str, str]] | None = None,
         link_lookup: Callable[[str], Mapping[str, Mapping[str, Any]]] | None = None,
+        media_captions: Callable[[str], Mapping[str, Any]] | None = None,
     ) -> None:
         """`loader` 接受 tweet_id、返回原始归档 dict（含 `upstream`/`enrichment`）。
 
@@ -81,6 +82,8 @@ class MarkdownWriter:
         self._status_updater = status_updater
         self._media_lookup = media_lookup
         self._link_lookup = link_lookup
+        #: 队列 #24：`tweet_id -> {source_url: MediaDescription}`，供内嵌图片 caption 使用。
+        self._media_captions = media_captions
 
     def _resolve_loader(self) -> Callable[[str], Mapping[str, Any]]:
         if self._loader is not None:
@@ -146,6 +149,7 @@ class MarkdownWriter:
             self._options,
             media_files=self._resolve_media_files(tweet_id, target),
             link_details=self._resolve_link_details(tweet_id, target),
+            media_captions=self._resolve_media_captions(tweet_id),
         )
         if target.exists():
             existing = target.read_text(encoding="utf-8")
@@ -184,6 +188,21 @@ class MarkdownWriter:
             if display:
                 resolved[str(url)] = display
         return resolved
+
+    def _resolve_media_captions(self, tweet_id: str) -> dict[str, Any]:
+        """取出本条的配图描述（队列 #24 A 阶段）。
+
+        只做透传：`{source_url: MediaDescription}` 由调用方（`process`）预先算好并缓存；
+        本方法缺省返回空字典 ⇒ 渲染层如实给出中性 alt（**不伪造描述**）。
+        """
+
+        if self._media_captions is None:
+            return {}
+        try:
+            return dict(self._media_captions(tweet_id) or {})
+        except Exception as exc:  # noqa: BLE001 - 描述缺失不该让 Markdown 失败
+            logger.warning("media captions lookup failed for %s: %s", tweet_id, exc)
+            return {}
 
     def _resolve_link_details(
         self, tweet_id: str, target: Path

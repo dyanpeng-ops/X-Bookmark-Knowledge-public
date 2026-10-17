@@ -69,6 +69,8 @@ class _SectionContext:
 
     media_files: Mapping[str, str] | None = None
     link_details: Mapping[str, Mapping[str, Any]] | None = None
+    #: 配图描述：`{source_url: MediaDescription}`（队列 #24 A 阶段：OCR 文字；B 阶段：视觉描述）
+    media_captions: Mapping[str, Any] | None = None
 
 
 def _now_iso(now: Any = None) -> str:
@@ -99,10 +101,11 @@ class RenderOptions:
     layout: str = YEAR_MONTH_LAYOUT
     frontmatter: bool = True
     # 顺序与 config.example.yaml 的 markdown.include_sections 保持一致。
+    #: 默认**不再**有独立 `media` 段 —— 图片改为内嵌在 `tweet` 段之后（队列 #24 A 阶段）。
+    #: 若确需旧的独立媒体段，显式把 "media" 加回本元组即可（向后兼容）。
     include_sections: tuple[str, ...] = (
         "tweet",
         "thread",
-        "media",
         "article",
         "external_links",
         "metadata",
@@ -238,12 +241,55 @@ def relative_output_path(
 # ── 段落渲染 ─────────────────────────────────────────────────────────────────
 
 
-def _render_section_tweet(upstream: Mapping[str, Any]) -> str:
+def _render_section_tweet(
+    upstream: Mapping[str, Any], context: "_SectionContext | None" = None
+) -> str:
     text = str(upstream.get("text") or "").strip()
     if not text:
-        return "> （本条没有可展示的文本）"
-    lines = _md_escape(text).split("\n")
-    return "\n".join(f"> {line}" for line in lines) if len(lines) > 1 else f"> {lines[0]}"
+        body = "> （本条没有可展示的文本）"
+    else:
+        lines = _md_escape(text).split("\n")
+        body = "\n".join(f"> {line}" for line in lines) if len(lines) > 1 else f"> {lines[0]}"
+    inline = _render_inline_media(upstream, context)
+    return f"{body}\n\n{inline}" if inline else body
+
+
+def _render_inline_media(
+    upstream: Mapping[str, Any], context: "_SectionContext | None" = None
+) -> str:
+    """**内嵌**媒体（队列 #24 A 阶段）：图片紧跟正文、多图并排、每图带可检索 caption。
+
+    * 图片：所有 `![](path)` 写在同一行 ⇒ Markdown 并排渲染；
+    * alt 文本 = 描述首行（无描述时给中性占位，**不伪造**）；
+    * 下方引用块写 "🖼 图 N：<OCR 文字>"，纯文本 ⇒ **可被全文搜索**；
+    * 视频/GIF：本机无 ffmpeg ⇒ A 阶段退化为**原链**（不静默丢信息），B 阶段再补首帧。
+    """
+
+    urls = [str(item) for item in (upstream.get("media") or ())]
+    if not urls:
+        return ""
+    files = (context.media_files if context is not None else None) or {}
+    captions = (context.media_captions if context is not None else None) or {}
+    images: list[str] = []
+    caption_lines: list[str] = []
+    for index, url in enumerate(urls, 1):
+        target = files.get(url) or url
+        desc = captions.get(url)
+        alt = str(getattr(desc, "alt_text", "") or "") if desc is not None else ""
+        alt = alt.replace("\n", " ").strip() or "配图"
+        images.append(f"![{_md_escape(alt)}]({target})")
+        if desc is not None and bool(getattr(desc, "has_text", False)):
+            caption = str(getattr(desc, "caption", "") or "").strip()
+            if caption:
+                first, *rest = caption.split("\n")
+                caption_lines.append(f"> 🖼 图 {index}：{first}")
+                caption_lines.extend(f"> {line}" for line in rest if line.strip())
+    parts: list[str] = []
+    if images:
+        parts.append(" ".join(images))
+    if caption_lines:
+        parts.append("\n".join(caption_lines))
+    return "\n\n".join(parts)
 
 
 def _render_section_media(
@@ -398,7 +444,7 @@ def _render_section_source(upstream: Mapping[str, Any]) -> str:
 
 
 _SECTION_RENDERERS: dict[str, Any] = {
-    "tweet": lambda u, e, c: _render_section_tweet(u),
+    "tweet": lambda u, e, c: _render_section_tweet(u, c),
     "thread": lambda u, e, c: _render_section_thread(e, u),
     "media": lambda u, e, c: _render_section_media(u, c.media_files),
     "article": lambda u, e, c: _render_section_article(e),
@@ -416,17 +462,23 @@ def render_markdown(
     *,
     media_files: Mapping[str, str] | None = None,
     link_details: Mapping[str, Mapping[str, Any]] | None = None,
+    media_captions: Mapping[str, Any] | None = None,
 ) -> str:
     """渲染整份 Markdown 文本（含可选 frontmatter + 各段落）。
 
     `media_files` 为可选的 `{source_url: 相对本文件的路径}` 映射（Phase 8 媒体本地化），
-    缺省时 `## media` 段落沿用远程 URL（Phase 7 行为完全不变）。
+    缺省时图片沿用远程 URL。
+
+    `media_captions` 为可选的 `{source_url: MediaDescription}`（队列 #24 A 阶段）：
+    图片会**内嵌在正文之后**并附带可检索 caption（alt 文本 + 引用块）。
 
     `link_details` 为可选的 `{原始 URL: {title, resolved_url, content_path, fetch_status,
     error_message}}`（Phase 9 外链层），缺省时 `## external_links` 也保持 Phase 7 行为。
     """
 
-    context = _SectionContext(media_files=media_files, link_details=link_details)
+    context = _SectionContext(
+        media_files=media_files, link_details=link_details, media_captions=media_captions
+    )
     parts: list[str] = []
     if options.frontmatter:
         frontmatter = build_frontmatter(upstream, enrichment)
