@@ -134,7 +134,7 @@ markdown:
   include_sections:
     - tweet
     - thread
-    - media
+    # 队列 #24 起：media 不再是独立段（图片内嵌在 tweet 之后）
     - article
     - external_links
     - metadata

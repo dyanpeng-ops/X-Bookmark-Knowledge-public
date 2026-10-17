@@ -395,6 +395,7 @@ def _cmd_process(args: argparse.Namespace, config: AppConfig) -> int:
         "  img captions  : "
         f"{len(media_captions)} bookmark(s) "
         f"(ocr={description_stats.get('ocr', 0)}, "
+        f"garbled={description_stats.get('garbled', 0)}, "
         f"vision={description_stats.get('vision', 0)}, "
         f"no-text={description_stats.get('no_text', 0)}, "
         f"cached={description_stats.get('hit', 0)}, "

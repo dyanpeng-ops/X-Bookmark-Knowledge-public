@@ -9,6 +9,43 @@
 
 ---
 
+## [Phase 10 · md 阅读体验] 2026-10-17 — **C 阶段**：OCR 质量门（乱码/过碎也补视觉）
+
+> 触发：队列 #26（用户已批准，F-PG2A3X-01 裁决落地）。
+> 背景：B 阶段审计实测 —— 同一张 OCR 乱码图，**视觉输出显著优于 OCR**。
+
+### Added
+
+- **OCR 质量门** `classify_ocr_quality()`（`src/media/descriptions.py`，**纯函数、可测试**）：
+  * **H1 有效字数过少**：`total_chars < XBK_OCR_MIN_CHARS`（默认 **40**）；
+  * **H2 过碎**：短行（≤3 字）占比 ≥ `XBK_OCR_SHORT_LINE_RATIO`（默认 **0.40**）
+    **且**平均行长 < `XBK_OCR_MAX_AVG_LINE`（默认 **8.0**）；
+  * 阈值全部可用环境变量覆盖（便于调参/测试）。
+- **调度**：OCR 有文字时先过质量门 —— **质量好 ⇒ 不调视觉**（省时间）；
+  **乱码/过碎 ⇒ 也走视觉补描述**（视觉失败则**退回 OCR 原文**，不丢信息）。
+- `MediaDescription.ocr_text`：补视觉时**保留 OCR 原文**，便于回溯"OCR 当时看到了什么"。
+- 缓存 schema **v3 → v4**（旧条目一次性重判，此后仍按 sha256 增量）。
+
+### Fixed
+
+- **重复图片**：`config` 的 `include_sections` 仍列 `media` ⇒ Markdown 里既有内嵌图**又有**旧 `## media` 段。
+  已从 `config/config.yaml` 与 `config/config.example.yaml` 移除；重渲染后全库 **0 篇**再有 `## media`。
+
+### Decided
+
+- **刻意不用「CJK 占比低」作乱码信号**：英文截图（GitHub/英文网页）CJK 占比天然为 0 但 OCR 完全正确，
+  实测会误伤好文本。改用「有效字数 + 短行占比 + 平均行长」组合。
+
+### Verified
+
+- 全量测试 **715 用例 OK**（705 ＋ 新增 10：质量门 6 ＋ 乱码补视觉 4）；
+- 实机：`img captions 21 篇（ocr=24, garbled=4, vision=9, no-text=0, failed=0）`，4 篇 md 因补视觉而更新；
+- **验收**：4 张乱码/过碎图的 md caption 均为**准确的视觉中文描述**（要求 ≥3 张）：
+  例「这是一张深色模式的软件设置界面截图，左侧为导航栏……红色方框高亮『兑现邀请码』……」；
+- 全库：**0 篇** `## media`、**17 篇**带 `🖼` caption。
+
+---
+
 ## [Phase 10 · md 阅读体验] 2026-10-17 — **B 阶段**：本地视觉模型"看图说话"（Saluki）
 
 > 触发：队列 #25（用户已批准；用户确认 Bionic 视觉已调通：Saluki-27B + mmproj Q8_0，ctx 16384）。

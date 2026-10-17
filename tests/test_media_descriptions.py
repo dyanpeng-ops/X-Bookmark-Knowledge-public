@@ -204,9 +204,11 @@ class VisionIntegrationTests(unittest.TestCase):
         self.assertIn("海边日落", desc.text)
 
     def test_vision_not_called_when_ocr_has_text(self):
+        # 队列 #26 起：**质量好**的 OCR 才不调视觉；乱码/过碎会补视觉（另有专门用例）
+        good = ["这是一段足够长、成句的中文说明文本，用来证明质量门不会误伤它。"] * 3
         vision = _StubVision()
-        desc = self.store(["截图里的文字"], vision).describe(self.img)
-        self.assertEqual(vision.calls, 0, "OCR 有文字时不得调用视觉（A 阶段优先级不变）")
+        desc = self.store(good, vision).describe(self.img)
+        self.assertEqual(vision.calls, 0, "质量好的 OCR 不得调用视觉（省时间）")
         self.assertEqual(desc.source, "ocr")
 
     def test_vision_failure_degrades_to_none(self):
@@ -285,3 +287,96 @@ class VisionEngineHttpTests(unittest.TestCase):
         from src.media.vision import VisionEngine
         engine = VisionEngine(base_url=self.base_url, model="not-there", timeout=5)
         self.assertFalse(engine.available())
+
+
+# ── 队列 #26：OCR 质量门（乱码/过碎 ⇒ 也补视觉）────────────────────────────
+
+
+class OcrQualityGateTests(unittest.TestCase):
+    """阈值边界、乱码触发、好文本不触发（纯函数，不依赖 OCR/视觉）。"""
+
+    def test_short_but_good_english_page_not_flagged(self):
+        from src.media.descriptions import classify_ocr_quality
+        q = classify_ocr_quality("README\nContributing\nApache-2.0 License\nDeepSeek Bot")
+        self.assertFalse(q.garbled, "英文页 CJK 占比天然为 0，不应据此判乱码")
+
+    def test_long_flowing_text_not_flagged(self):
+        from src.media.descriptions import classify_ocr_quality
+        text = "\n".join(["这是一段完整的中文说明文字，用于验证质量门不会误伤成句文本。"] * 5)
+        self.assertFalse(classify_ocr_quality(text).garbled)
+
+    def test_fragmented_short_lines_flagged(self):
+        from src.media.descriptions import classify_ocr_quality
+        q = classify_ocr_quality("设置\n通用\n连接器\n钱包\n安全存储\n权限\n消息渠道")
+        self.assertTrue(q.garbled, "短行占比高 + 平均行长过短 ⇒ 过碎")
+
+    def test_garbled_sample_flagged(self):
+        from src.media.descriptions import classify_ocr_quality
+        q = classify_ocr_quality("＜把链接粘贴到这里\n冷汽车\n灯T声音的\nN 沉默的\n层粘贴")
+        self.assertTrue(q.garbled)
+
+    def test_empty_text_not_flagged(self):
+        from src.media.descriptions import classify_ocr_quality
+        self.assertFalse(classify_ocr_quality("").garbled)
+
+    def test_threshold_boundary_total_chars(self):
+        """有效字数刚过阈值 ⇒ 不因 H1 触发（用单行好文本验证边界）。"""
+
+        from src.media.descriptions import classify_ocr_quality
+        just_above = "字" * 41
+        self.assertFalse(classify_ocr_quality(just_above).garbled)
+        self.assertTrue(classify_ocr_quality("字" * 10).garbled)
+
+
+class GarbledSupplementTests(unittest.TestCase):
+    """乱码/过碎 ⇒ 调视觉补描述；视觉失败 ⇒ 退回 OCR 原文（不伪造、不阻断）。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="xbook-garb-")
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.img = self.tmp / "shot.png"
+        self.img.write_bytes(b"png")
+
+    def store(self, lines, vision):
+        return MediaDescriptionStore(store_path=self.tmp / "d.json",
+                                     engine=_StubEngine(lines), vision=vision)
+
+    GARBLED_LINES = ["设置", "通用", "连接器", "钱包", "安全存储", "权限", "消息渠道"]
+
+    def test_garbled_ocr_triggers_vision_supplement(self):
+        vision = _StubVision("一张设置页面的截图，左侧是菜单项。")
+        desc = self.store(self.GARBLED_LINES, vision).describe(self.img)
+        self.assertEqual(vision.calls, 1)
+        self.assertEqual(desc.source, "vision")
+        self.assertIn("设置页面", desc.text)
+        self.assertTrue(desc.ocr_text, "应保留 OCR 原文以便回溯")
+        self.assertIn("连接器", desc.ocr_text)
+
+    def test_good_ocr_does_not_trigger_vision(self):
+        vision = _StubVision()
+        good = ["这是一段足够长、成句的中文说明文本，用来证明质量门不会误伤它。"] * 3
+        desc = self.store(good, vision).describe(self.img)
+        self.assertEqual(vision.calls, 0)
+        self.assertEqual(desc.source, "ocr")
+
+    def test_garbled_vision_failure_falls_back_to_ocr(self):
+        vision = _StubVision(fail=True)
+        desc = self.store(self.GARBLED_LINES, vision).describe(self.img)
+        self.assertEqual(desc.source, "ocr", "视觉失败应退回 OCR 原文，而不是丢弃")
+        self.assertIn("连接器", desc.text)
+
+    def test_cache_schema_migration_invalidates_old_entries(self):
+        """旧 schema（v3）缓存应整体失效 ⇒ 重跑（从而给乱码图补视觉）。"""
+
+        import json as _json
+        from src.media.descriptions import DESCRIPTION_SCHEMA
+        stale = self.tmp / "d.json"
+        stale.write_text(_json.dumps({"schema": DESCRIPTION_SCHEMA - 1, "entries": [
+            {"sha256": "x" * 64, "text": "旧缓存", "source": "ocr", "has_text": True}
+        ]}), encoding="utf-8")
+        vision = _StubVision("视觉描述")
+        store = MediaDescriptionStore(store_path=stale, engine=_StubEngine(self.GARBLED_LINES),
+                                      vision=vision)
+        desc = store.describe(self.img)
+        self.assertEqual(desc.source, "vision", "旧 schema 失效后应重判并补视觉")

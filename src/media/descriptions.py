@@ -33,8 +33,9 @@ __all__ = [
 ]
 
 #: 缓存文件 schema 版本（结构变更时递增，旧缓存自动失效）。
-#: v3（2026-10-17）：B 阶段新增 vision 描述 ⇒ 旧的 `none` 缓存失效，可补"看图说话"。
-DESCRIPTION_SCHEMA = 3
+#: v4（2026-10-17）：新增「OCR 质量门」——乱码/过碎的 OCR 也补视觉描述，
+#: 旧条目需重判 ⇒ schema 升级使 v3 缓存整体失效一次（一次性重跑，之后仍按 sha256 增量）。
+DESCRIPTION_SCHEMA = 4
 
 #: caption 里正文的最大长度（超出截断并加省略号；完整文本仍在缓存/OCR 里）。
 CAPTION_MAX_CHARS = 600
@@ -66,6 +67,63 @@ def _caption_text(text: str) -> str:
     return text[:CAPTION_MAX_CHARS].rstrip() + "…"
 
 
+# ── OCR 质量门（队列 #26）──────────────────────────────────────────────────
+#
+# 目标：识别「有文字、但**乱码/过碎**」的 OCR —— 这类图的 OCR caption 读不懂，
+# 交给视觉模型"看图说话"更有价值；而**质量好的 OCR**（成句、行较长）仍然不调视觉（省时间）。
+#
+# 启发式（均可用环境变量覆盖，便于调参与测试）：
+#   H1 有效字数过少：total_chars < XBK_OCR_MIN_CHARS（默认 40）
+#   H2 过碎：短行（≤3 字）占比 ≥ XBK_OCR_SHORT_LINE_RATIO（默认 0.40）
+#            且 平均行长 < XBK_OCR_MAX_AVG_LINE（默认 8.0）
+#
+# 刻意**不使用**「CJK 占比低」：英文截图（GitHub / 英文网页）CJK 占比天然为 0，
+# 但 OCR 完全正确，用它会把好文本误判为乱码（实测数据已证实）。
+MIN_TOTAL_CHARS = int(os.environ.get("XBK_OCR_MIN_CHARS", "40"))
+SHORT_LINE_MAX_LEN = 3
+SHORT_LINE_RATIO = float(os.environ.get("XBK_OCR_SHORT_LINE_RATIO", "0.40"))
+MAX_AVG_LINE_LEN = float(os.environ.get("XBK_OCR_MAX_AVG_LINE", "8.0"))
+
+
+@dataclass(frozen=True)
+class OcrQuality:
+    """OCR 文本的质量指标（纯数据，便于断言与调参）。"""
+
+    total_chars: int
+    n_lines: int
+    short_line_ratio: float
+    avg_line_len: float
+
+    @property
+    def garbled(self) -> bool:
+        """是否判定为「乱码/过碎」（需补视觉描述）。"""
+
+        if self.n_lines == 0 or self.total_chars == 0:
+            return False                      # 空文本走"无文字"分支，不在此判定
+        too_short = self.total_chars < MIN_TOTAL_CHARS
+        fragmented = (
+            self.short_line_ratio >= SHORT_LINE_RATIO
+            and self.avg_line_len < MAX_AVG_LINE_LEN
+        )
+        return too_short or fragmented
+
+
+def classify_ocr_quality(text: str) -> OcrQuality:
+    """计算 OCR 文本的质量指标（空行不计入行数）。"""
+
+    lines = [line.strip() for line in str(text).split("\n") if line.strip()]
+    if not lines:
+        return OcrQuality(total_chars=0, n_lines=0, short_line_ratio=0.0, avg_line_len=0.0)
+    total = sum(len(line) for line in lines)
+    short = sum(1 for line in lines if len(line) <= SHORT_LINE_MAX_LEN)
+    return OcrQuality(
+        total_chars=total,
+        n_lines=len(lines),
+        short_line_ratio=short / len(lines),
+        avg_line_len=total / len(lines),
+    )
+
+
 @dataclass(frozen=True)
 class MediaDescription:
     """一张配图的描述。``source`` 取值：``"ocr"`` / ``"none"``（未来 ``"vision"``）。"""
@@ -76,6 +134,8 @@ class MediaDescription:
     has_text: bool
     langs: tuple[str, ...] = ()
     described_at: str = ""
+    #: 队列 #26：OCR 原始文本（当 `source="vision"` 时保留，便于回溯"OCR 当时看到了什么"）。
+    ocr_text: str = ""
 
     @property
     def caption(self) -> str:
@@ -102,6 +162,7 @@ class MediaDescription:
             "has_text": self.has_text,
             "langs": list(self.langs),
             "described_at": self.described_at,
+            "ocr_text": self.ocr_text,
         }
 
     @classmethod
@@ -113,6 +174,7 @@ class MediaDescription:
             has_text=bool(payload.get("has_text")),
             langs=tuple(str(x) for x in (payload.get("langs") or [])),
             described_at=str(payload.get("described_at") or ""),
+            ocr_text=str(payload.get("ocr_text") or ""),
         )
 
 
@@ -139,7 +201,7 @@ class MediaDescriptionStore:
         self._entries: dict[str, MediaDescription] = {}
         self._dirty = False
         self._loaded = False
-        self.stats = {"hit": 0, "ocr": 0, "vision": 0, "no_text": 0, "failed": 0}
+        self.stats = {"hit": 0, "ocr": 0, "garbled": 0, "vision": 0, "no_text": 0, "failed": 0}
 
     # ── 持久化 ──────────────────────────────────────────────────────────────
 
@@ -208,10 +270,24 @@ class MediaDescriptionStore:
                                     described_at=stamp)
         text = _clean_lines(result.lines)
         if text:
+            quality = classify_ocr_quality(text)
+            if not quality.garbled:
+                # 质量好的 OCR：**不调视觉**（省时间），直接用 OCR 文字做 caption
+                self.stats["ocr"] += 1
+                return MediaDescription(sha256=sha, text=text, source="ocr", has_text=True,
+                                        langs=result.languages, described_at=stamp)
+            # 队列 #26：OCR **乱码/过碎** ⇒ 也走视觉"补描述"（视觉失败则退回 OCR 原文）
+            self.stats["garbled"] = self.stats.get("garbled", 0) + 1
+            vision_text = self._try_vision(path)
+            if vision_text:
+                self.stats["vision"] += 1
+                return MediaDescription(sha256=sha, text=vision_text, source="vision",
+                                        has_text=True, langs=result.languages,
+                                        described_at=stamp, ocr_text=text)
             self.stats["ocr"] += 1
             return MediaDescription(sha256=sha, text=text, source="ocr", has_text=True,
                                     langs=result.languages, described_at=stamp)
-        # —— B 阶段：OCR 无文字 ⇒ 才走本地视觉模型"看图说话"（A 阶段优先级不变）——
+        # —— OCR 无文字 ⇒ 走本地视觉模型"看图说话"（A 阶段优先级不变）——
         vision_text = self._try_vision(path)
         if vision_text:
             self.stats["vision"] += 1
