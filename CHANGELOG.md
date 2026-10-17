@@ -9,6 +9,33 @@
 
 ---
 
+## [Phase 10 · md 阅读体验] 2026-10-17 — **X 站内链卡片**（用户「做卡片」）
+
+- `links` 抓取按域名规则跳过 X 站内链（`x.com/**`），此前在 `## external_links` 里是**裸链**；
+- 现在对无标题的 X 站内链渲染**派生卡片**：`- [X 文章（YYYY-MM-DD）](url)`
+  （日期取笔记 `postedAt`；`/i/article/` → X 文章、`/i/` → X 链接、其它 → X 推文），**不伪造原文标题**；
+- 其它域名的裸链行为不变（仍是 `- <url>`）。
+- 测试 **724 用例 OK**（+2：X 站内链卡片 / 其它裸链不变）；实机重渲染 14 篇。
+
+---
+
+## [Phase 10 · md 阅读体验] 2026-10-17 — **笔记结构精简**（用户要求）
+
+> 触发：用户「精简书签笔记属性只保留标题，连 metadata 也删」。
+
+### Changed
+
+- **frontmatter 只保留 `title`**（`FRONTMATTER_KEYS = ("title",)`）：tweet_id / url / author / created_at /
+  engagement / tags / …… 全部移除 —— 信息不丢：正文 `## source` 仍保留原文链接（含 tweet id）。
+- **删除 `## metadata` 段**：默认 `include_sections` 与两份配置均移除 `metadata`。
+- `writer` 判定"文件归属哪条 tweet"改为读**正文**（`## source` 的 `/status/<id>` 或 `## metadata` 历史会话 ID），
+  不再依赖 frontmatter 的 `tweet_id`（配合改名后的旧文件清理）。
+- 笔记结构变为：`frontmatter(title)` → `# 标题` → `## tweet`（含内嵌图片）→ `## thread` → `## article`
+  → `## external_links` → `## ai_analysis` → `## source`。
+- 实机：**49 篇全部重写**、0 失败；全量测试 **722 用例 OK**（3 个受影响用例已同步）。
+
+---
+
 ## [Phase 10 · md 阅读体验] 2026-10-17 — **按书签标题命名文件**（用户要求）
 
 > 触发：用户「把这种命名（`YYYYMMDD-<tweet_id>.md`）全部改成具体书签标题」。

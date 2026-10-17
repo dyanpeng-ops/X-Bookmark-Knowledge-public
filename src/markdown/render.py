@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from src.collector.contract import parse_twitter_datetime
 
@@ -44,20 +44,8 @@ DEFAULT_FILENAME_PATTERN = "{yyyymmdd}-{tweet_id}.md"
 YEAR_MONTH_LAYOUT = "year_month"
 
 FRONTMATTER_KEYS: tuple[str, ...] = (
-    "tweet_id",
     "title",
-    "url",
-    "author_handle",
-    "author_name",
-    "created_at",
-    "language",
-    "media_count",
-    "link_count",
-    "engagement",
     "tags",
-    "primary_category",
-    "folder_names",
-    "source",
 )
 
 #: `## external_links` 段落里显示的状态标签（Phase 9）；`PENDING` 不显示备注。
@@ -72,6 +60,8 @@ class _SectionContext:
     link_details: Mapping[str, Mapping[str, Any]] | None = None
     #: 配图描述：`{source_url: MediaDescription}`（队列 #24 A 阶段：OCR 文字；B 阶段：视觉描述）
     media_captions: Mapping[str, Any] | None = None
+    #: 本地翻译产物：`{"text": 中文译文, "title": 中文标题}`（用户要求：英文书签翻中文）
+    translation: Mapping[str, Any] | None = None
 
 
 def _now_iso(now: Any = None) -> str:
@@ -109,7 +99,6 @@ class RenderOptions:
         "thread",
         "article",
         "external_links",
-        "metadata",
         "ai_analysis",
         "source",
     )
@@ -230,28 +219,9 @@ def derive_title(
 def build_frontmatter(
     upstream: Mapping[str, Any], enrichment: Mapping[str, Any] | None
 ) -> dict[str, Any]:
-    """构造 frontmatter 字典（键序稳定、值可被 YAML 序列化）。"""
+    """frontmatter **只保留可读标题**（用户要求：精简笔记属性）。"""
 
-    engagement = upstream.get("engagement") or {}
-    media_urls = upstream.get("media") or ()
-    tags = list(upstream.get("tags") or ())
-    derived_title = derive_title(upstream, enrichment)
-    return {
-        "tweet_id": upstream.get("tweetId"),
-        "title": derived_title,
-        "url": upstream.get("url"),
-        "author_handle": upstream.get("authorHandle"),
-        "author_name": upstream.get("authorName"),
-        "created_at": _iso_created_at(upstream),
-        "language": upstream.get("language"),
-        "media_count": len(media_urls),
-        "link_count": len(upstream.get("links") or ()),
-        "engagement": dict(engagement),
-        "tags": tags,
-        "primary_category": (enrichment or {}).get("primaryCategory"),
-        "folder_names": list((enrichment or {}).get("folderNames") or ()),
-        "source": upstream.get("ingestedVia"),
-    }
+    return {"title": derive_title(upstream, enrichment)}
 
 
 def date_parts(created_at: str | None) -> tuple[str, str, str]:
@@ -331,6 +301,13 @@ def _render_section_tweet(
     else:
         lines = _md_escape(text).split("\n")
         body = "\n".join(f"> {line}" for line in lines) if len(lines) > 1 else f"> {lines[0]}"
+    translation = (context.translation if context is not None else None) or {}
+    zh = str(translation.get("text") or "").strip()
+    if zh:
+        # 用户要求：中文译文放最前，原文保留在下面（可对照，不丢信息）
+        zh_lines = zh.split("\n")
+        zh_block = "\n".join(f"> {line}" for line in zh_lines)
+        body = f"{zh_block}\n\n> **原文**\n>\n{body}"
     inline = _render_inline_media(upstream, context)
     return f"{body}\n\n{inline}" if inline else body
 
@@ -410,6 +387,26 @@ def _render_section_article(enrichment: Mapping[str, Any] | None) -> str:
     return "\n\n".join(parts)
 
 
+#: X/推特站内链（`links` 抓取按域名跳过）→ 用派生标签做成卡片（用户要求「做卡片」）。
+_X_INTERNAL_RE = re.compile(
+    r"^https?://(?:www\.)?(?:x\.com|twitter\.com)/", re.IGNORECASE
+)
+
+
+def _x_link_label(url: str, upstream: Mapping[str, Any]) -> str:
+    """为 X 站内链生成**派生标签**（不伪造原文标题）：X 文章（YYYY-MM-DD）。"""
+
+    created = _iso_created_at(upstream) or ""
+    day = created[:10]
+    if "/i/article/" in url:
+        kind = "X 文章"
+    elif "/i/" in url:
+        kind = "X 链接"
+    else:
+        kind = "X 推文"
+    return f"{kind}（{day}）" if day else kind
+
+
 def _render_section_external_links(
     upstream: Mapping[str, Any],
     link_details: Mapping[str, Mapping[str, Any]] | None = None,
@@ -436,7 +433,13 @@ def _render_section_external_links(
         detail = details.get(url)
         info: Mapping[str, Any] = detail if isinstance(detail, Mapping) else {}
         title = str(info.get("title") or "").strip()
+        if not title and _X_INTERNAL_RE.match(url):
+            title = _x_link_label(url, upstream)      # X 站内链：派生卡片（不伪造标题）
         blocks.append(f"- [{_escape_link_text(title)}]({url})" if title else f"- {url}")
+        cover = str(info.get("image_path") or "").strip()
+        if cover:
+            # 用户要求：纯链书签抓链接图片做封面卡（image_path 已是 vault 相对路径）
+            blocks.append(f"  ![封面]({cover})")
 
         status = str(info.get("fetch_status") or "").strip().upper()
         resolved = str(info.get("resolved_url") or "").strip()
@@ -544,6 +547,8 @@ def render_markdown(
     media_files: Mapping[str, str] | None = None,
     link_details: Mapping[str, Mapping[str, Any]] | None = None,
     media_captions: Mapping[str, Any] | None = None,
+    translation: Mapping[str, Any] | None = None,
+    tags: "Sequence[str] | None" = None,
 ) -> str:
     """渲染整份 Markdown 文本（含可选 frontmatter + 各段落）。
 
@@ -558,11 +563,17 @@ def render_markdown(
     """
 
     context = _SectionContext(
-        media_files=media_files, link_details=link_details, media_captions=media_captions
+        media_files=media_files, link_details=link_details, media_captions=media_captions,
+        translation=translation,
     )
     parts: list[str] = []
+    zh_title = str((translation or {}).get("title") or "").strip()
     if options.frontmatter:
-        frontmatter = build_frontmatter(upstream, enrichment)
+        frontmatter = dict(build_frontmatter(upstream, enrichment))
+        if zh_title:
+            frontmatter["title"] = zh_title
+        if tags:
+            frontmatter["tags"] = list(tags)[:3]     # 队列 #28：预设标签，1–3 个
         lines = ["---"]
         for key in FRONTMATTER_KEYS:
             if key in frontmatter:
@@ -570,8 +581,8 @@ def render_markdown(
         lines.append("---")
         parts.append("\n".join(lines))
 
-    # 队列 #27 ②：正文前加可读标题（真实标题优先，纯链接类用派生标签）
-    doc_title = derive_title(upstream, enrichment)
+    # 队列 #27 ②：正文前加可读标题（真实标题优先，纯链接类用派生标签；有译文标题则用译文）
+    doc_title = zh_title or derive_title(upstream, enrichment)
     if doc_title:
         parts.append(f"# {doc_title}")
 

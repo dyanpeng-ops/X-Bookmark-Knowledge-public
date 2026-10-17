@@ -67,6 +67,7 @@ from src.external import (  # noqa: E402
 from src.external.handlers import GitHubHandler, WebHandler, parse_html  # noqa: E402
 from src.markdown import MarkdownWriter, RenderOptions, render_markdown  # noqa: E402
 
+
 STUB = PROJECT_ROOT / "tests" / "support" / "stub_fieldtheory.py"
 
 ARTICLE_URL = "https://example.com/sample-a"
@@ -82,6 +83,9 @@ HTML_PAGE = (
     b"<footer>footer noise</footer></body></html>"
 )
 
+
+import os as _os
+_os.environ.setdefault("XBK_TRANSLATE", "0")   # 测试不调用真实本地模型（F-BYNLUY-03）
 
 def response(
     url: str,
@@ -909,7 +913,9 @@ class ExternalLinksSectionTests(unittest.TestCase):
                 }
             )
         )
-        self.assertIn(f"- {X_ARTICLE_URL}", section)
+        # 队列 #27 续：X 站内链现在渲染成派生卡片（不再是裸链）
+        self.assertIn(f"]({X_ARTICLE_URL})", section)
+        self.assertIn("[X 文章（2026-09-14）]", section)
         self.assertIn("  - 已跳过：skip_domains (x.com)", section)
         self.assertNotIn("skipped: skip_domains", section)
 
@@ -1504,3 +1510,26 @@ class ReviewFixTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class OgImageExtractionTests(unittest.TestCase):
+    """用户要求：纯链书签抓链接图片（og:image）做封面卡 —— 纯函数，不联网。"""
+
+    def test_extracts_og_image_property_first(self):
+        from src.external.fetcher import extract_og_image
+        html = '<meta property="og:image" content="https://cdn.example.com/a.jpg">'
+        self.assertEqual(extract_og_image(html), "https://cdn.example.com/a.jpg")
+
+    def test_extracts_content_first_order(self):
+        from src.external.fetcher import extract_og_image
+        html = '<meta content="https://cdn.example.com/b.png" property="og:image">'
+        self.assertEqual(extract_og_image(html, "https://example.com/x"), "https://cdn.example.com/b.png")
+
+    def test_relative_image_is_resolved_against_base(self):
+        from src.external.fetcher import extract_og_image
+        html = '<meta name="twitter:image" content="/img/c.png">'
+        self.assertEqual(extract_og_image(html, "https://example.com/post/1"), "https://example.com/img/c.png")
+
+    def test_missing_returns_none(self):
+        from src.external.fetcher import extract_og_image
+        self.assertIsNone(extract_og_image("<html><body>hi</body></html>", "https://e.com"))

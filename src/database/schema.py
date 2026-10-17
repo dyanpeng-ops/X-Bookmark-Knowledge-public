@@ -169,7 +169,16 @@ MIGRATION_3 = Migration(
     ),
 )
 
-MIGRATIONS: tuple[Migration, ...] = (MIGRATION_1, MIGRATION_2, MIGRATION_3)
+MIGRATION_4 = Migration(
+    version=4,
+    name="external link cover image (og:image)",
+    statements=(
+        # 用户要求：纯链书签抓链接图片做封面卡；抓取层解析 og:image 后落此列。
+        "ALTER TABLE external_links ADD COLUMN image_url TEXT",
+    ),
+)
+
+MIGRATIONS: tuple[Migration, ...] = (MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4)
 
 SCHEMA_VERSION: int = max(migration.version for migration in MIGRATIONS)
 

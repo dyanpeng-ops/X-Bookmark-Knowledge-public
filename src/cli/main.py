@@ -21,6 +21,8 @@
 
 from __future__ import annotations
 
+import os
+
 import argparse
 import logging
 import sqlite3
@@ -377,6 +379,23 @@ def _cmd_process(args: argparse.Namespace, config: AppConfig) -> int:
     # 增量：按图片内容 sha256 缓存（data/state/media-descriptions.json），已描述的不重跑。
     media_captions, description_stats = _local_media_captions(config, knowledge_dir, media_paths)
 
+    # 队列 #27 续：英文/西语书签 → 中文（本地 Saluki，零 API 花费；失败/不可用不伪造）
+    from src.media.translate import TranslationStore
+
+    translate_enabled = os.environ.get("XBK_TRANSLATE", "1").strip().lower() not in (
+        "0", "false", "off", "no",
+    )
+    translator = (
+        TranslationStore(store_path=config.project_root / "data" / "state" / "translations.json")
+        if translate_enabled
+        else None
+    )
+
+    # 队列 #28：书签标签分类（本地 Saluki，预设 12 标签，每篇 1–3 个）
+    from src.media.tagging import TagClassifier
+
+    tagger = TagClassifier() if translate_enabled else None   # 测试用同一开关隔离真实模型
+
     writer = MarkdownWriter(
         knowledge_dir,
         raw_dir=config.paths.raw_dir,
@@ -385,9 +404,16 @@ def _cmd_process(args: argparse.Namespace, config: AppConfig) -> int:
         media_lookup=media_paths.get,
         link_lookup=link_details.get,
         media_captions=media_captions.get,
+        translator=translator,
+        tagger=tagger,
         media_link_mode=str(section.get("media_link_mode") or "note-relative"),
     )
     stats = writer.run(tweet_ids)
+    if translator is not None:
+        try:
+            translator.save()
+        except OSError as exc:  # noqa: BLE001
+            logger.warning("failed to persist translations: %s", exc)
 
     print("Markdown report")
     print(f"  knowledge dir : {knowledge_dir}")

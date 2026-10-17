@@ -7,6 +7,8 @@ Phase 9 追加一个可选的 `link_lookup`，把外链正文的落点带进 `##
 
 from __future__ import annotations
 
+import re
+
 import json
 import logging
 import os
@@ -57,6 +59,8 @@ class MarkdownWriter:
         link_lookup: Callable[[str], Mapping[str, Mapping[str, Any]]] | None = None,
         media_captions: Callable[[str], Mapping[str, Any]] | None = None,
         media_link_mode: str = "note-relative",
+        translator: Any | None = None,
+        tagger: Any | None = None,
     ) -> None:
         """`loader` 接受 tweet_id、返回原始归档 dict（含 `upstream`/`enrichment`）。
 
@@ -88,6 +92,10 @@ class MarkdownWriter:
         #: 队列 #27：图片链接写法。`note-relative`=相对当前 md（GitHub 等通用）；
         #: `vault-relative`=相对知识库根（= Obsidian vault 根），Obsidian 默认按 vault 根解析。
         self._media_link_mode = media_link_mode
+        #: 可选：本地翻译（TranslationStore）。None = 不翻译（既有行为完全不变）。
+        self._translator = translator
+        #: 可选：本地标签分类器（队列 #28）。None = 不分类（行为不变）。
+        self._tagger = tagger
 
     def _resolve_loader(self) -> Callable[[str], Mapping[str, Any]]:
         if self._loader is not None:
@@ -161,6 +169,8 @@ class MarkdownWriter:
             media_files=self._resolve_media_files(tweet_id, target),
             link_details=self._resolve_link_details(tweet_id, target),
             media_captions=self._resolve_media_captions(tweet_id),
+            translation=self._resolve_translation(upstream, enrichment),
+            tags=self._resolve_tags(upstream, enrichment),
         )
         if target.exists():
             existing = target.read_text(encoding="utf-8")
@@ -206,10 +216,11 @@ class MarkdownWriter:
         """判断目标文件是否属于该 tweet（读 frontmatter 的 tweet_id）。"""
 
         try:
-            head = target.read_text(encoding="utf-8")[:400]
+            text = target.read_text(encoding="utf-8")
         except OSError:
             return False
-        return f"tweet_id: {tweet_id}" in head
+        # frontmatter 已精简（只留 title）⇒ 用正文里的原文链接/会话 ID 判定归属
+        return f"/status/{tweet_id}" in text or f"会话 ID：`{tweet_id}`" in text
 
     def _remove_stale_siblings(self, tweet_id: str, keep: Path) -> int:
         """按标题重命名后，删除同一目录下旧的 `*-{tweet_id}.md`（队列 #27）。"""
@@ -227,6 +238,62 @@ class MarkdownWriter:
         except OSError as exc:  # noqa: BLE001
             logger.warning("failed to remove stale markdown for %s: %s", tweet_id, exc)
         return removed
+
+    def _resolve_tags(
+        self, upstream: Mapping[str, Any], enrichment: Mapping[str, Any] | None
+    ) -> tuple[str, ...]:
+        """队列 #28：从**预设 12 标签**里选 1–3 个（本地 Saluki；失败返回空，不伪造）。"""
+
+        if self._tagger is None:
+            return ()
+        from .render import derive_title
+
+        parts = [str(upstream.get("text") or "")]
+        title = derive_title(upstream, enrichment)
+        if title:
+            parts.append(title)
+        try:
+            return tuple(self._tagger.classify("\n".join(parts)))
+        except Exception as exc:  # noqa: BLE001 - 分类失败不该让 Markdown 失败
+            logger.warning("tag classification failed: %s", exc)
+            return ()
+
+    def _resolve_translation(
+        self, upstream: Mapping[str, Any], enrichment: Mapping[str, Any] | None
+    ) -> dict[str, str]:
+        """队列 #27 续：英文书签 → 中文（正文＋标题），只翻日常用语。
+
+        `translator` 为 None 时直接返回空（既有行为不变）；失败/不可用 ⇒ 空（**不伪造译文**）。
+        """
+
+        if self._translator is None:
+            return {}
+        from .render import derive_title
+        from .translate_helper import should_translate   # 轻量再导出，避免循环导入
+
+        text = str(upstream.get("text") or "")
+        language = upstream.get("language")
+        if not should_translate(language, text):
+            return {}
+        out: dict[str, str] = {}
+        zh_text = self._translator.translate(text)
+        # 质量门：模型原样返回（几乎没翻）⇒ 视为失败，宁可不加译文也不混排
+        if zh_text and _mostly_same(zh_text, text):
+            zh_text = ""
+        if zh_text:
+            out["text"] = zh_text
+        title = derive_title(upstream, enrichment)
+        if title and should_translate(language, title):
+            zh_title = self._translator.translate(title)
+            if zh_title and _mostly_same(zh_title, title):
+                zh_title = ""
+            if not zh_title and zh_text:
+                # 标题翻译失败/未翻 ⇒ 用正文译文的首句兜底（不伪造，只是取已有译文）
+                first = re.split(r"[。！？!?\n]", zh_text, maxsplit=1)[0].strip()
+                zh_title = first[:40]
+            if zh_title:
+                out["title"] = zh_title
+        return out
 
     def _resolve_media_captions(self, tweet_id: str) -> dict[str, Any]:
         """取出本条的配图描述（队列 #24 A 阶段）。
@@ -295,6 +362,21 @@ class MarkdownWriter:
             # 跨盘符（Windows）无法计算相对路径：保留原路径而不是让整条记录失败。
             display = str(candidate)
         return display.replace("\\", "/")
+
+
+
+def _mostly_same(translated: str, original: str, threshold: float = 0.85) -> bool:
+    """译文与原文"几乎相同"（模型原样返回/只翻了个别词）⇒ 判定为无效翻译。"""
+
+    import difflib
+
+    a = str(translated or "").strip()
+    b = str(original or "").strip()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return difflib.SequenceMatcher(None, a, b).ratio() >= threshold
 
 
 def _iso_from_upstream(upstream: Mapping[str, Any]) -> str | None:

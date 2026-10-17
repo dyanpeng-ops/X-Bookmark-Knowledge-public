@@ -380,3 +380,133 @@ class GarbledSupplementTests(unittest.TestCase):
                                       vision=vision)
         desc = store.describe(self.img)
         self.assertEqual(desc.source, "vision", "旧 schema 失效后应重判并补视觉")
+
+
+class TranslationTests(unittest.TestCase):
+    """用户要求：英文书签翻成中文、只翻日常用语（专有名词保留）。"""
+
+    def test_should_translate_language_and_heuristics(self):
+        from src.media.translate import should_translate
+        self.assertTrue(should_translate("en"))
+        self.assertTrue(should_translate("es"))
+        self.assertFalse(should_translate("zh", "这是中文正文"))
+        # 语言未知但字母为主 ⇒ 翻
+        self.assertTrue(should_translate(None, "What if your X bookmarks could be read locally?"))
+        self.assertFalse(should_translate(None, "这是中文正文，长度也够"))
+
+    def test_prompt_protects_proper_nouns(self):
+        from src.media.translate import TRANSLATE_PROMPT
+        for word in ("软件名", "公司名", "产品名", "代码", "URL"):
+            self.assertIn(word, TRANSLATE_PROMPT)
+        self.assertIn("只翻译日常用语", TRANSLATE_PROMPT)
+
+    def test_translate_returns_model_output(self):
+        import threading, http.server, json as _json
+        from src.media.translate import TranslationEngine
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = _json.dumps({"data": [{"id": "stub"}]}).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
+                self.wfile.write(body)
+            def do_POST(self):  # noqa: N802
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                body = _json.dumps({"choices": [{"message": {"content": " 这是译文 "}}]}).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *a): return
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        engine = TranslationEngine(base_url=f"http://127.0.0.1:{server.server_address[1]}", model="stub",
+                                   timeout=10)
+        self.assertEqual(engine.translate("hello world"), "这是译文")
+        self.assertEqual(engine.translate("  "), "")
+
+
+class TranslationStoreTests(unittest.TestCase):
+    """翻译缓存：原文不变不重翻；失败不伪造。"""
+
+    class _Engine:
+        def __init__(self, out="译文", fail=False):
+            self.calls = 0; self._out = out; self._fail = fail
+        def translate(self, text):
+            self.calls += 1
+            if self._fail:
+                from src.media.vision import VisionError
+                raise VisionError("boom")
+            return self._out
+
+    def test_cache_hit_skips_engine(self):
+        import tempfile
+        from pathlib import Path as _P
+        from src.media.translate import TranslationStore
+        with tempfile.TemporaryDirectory() as tmp:
+            eng = self._Engine()
+            store = TranslationStore(store_path=_P(tmp) / "t.json", engine=eng)
+            self.assertEqual(store.translate("hello"), "译文")
+            self.assertEqual(store.translate("hello"), "译文")
+            self.assertEqual(eng.calls, 1)
+
+    def test_failure_returns_empty(self):
+        import tempfile
+        from pathlib import Path as _P
+        from src.media.translate import TranslationStore
+        with tempfile.TemporaryDirectory() as tmp:
+            store = TranslationStore(store_path=_P(tmp) / "t.json", engine=self._Engine(fail=True))
+            self.assertEqual(store.translate("hello"), "")
+            self.assertEqual(store.stats["failed"], 1)
+
+
+class TaggingTests(unittest.TestCase):
+    """队列 #28：只允许预设 12 标签、每篇 1–3 个、失败不伪造。"""
+
+    def test_preset_tags_are_the_twelve(self):
+        from src.media.tagging import PRESET_TAGS
+        self.assertEqual(len(PRESET_TAGS), 12)
+        for tag in ("AI大模型", "AI工具", "Agent自动化", "编程开发", "投资理财", "宏观经济",
+                    "美股QDII", "iPhone技巧", "效率工具", "科技新闻", "设计创意", "生活随笔"):
+            self.assertIn(tag, PRESET_TAGS)
+
+    def test_parse_tags_keeps_only_preset_and_max_three(self):
+        from src.media.tagging import parse_tags
+        self.assertEqual(parse_tags('["AI工具","编程开发"]'), ("AI工具", "编程开发"))
+        # 非预设一律丢弃
+        self.assertEqual(parse_tags('["随便编的标签","AI工具"]'), ("AI工具",))
+        # 超过 3 个截断，且按预设顺序
+        many = '["科技新闻","AI工具","AI大模型","编程开发","投资理财"]'
+        picked = parse_tags(many)
+        self.assertLessEqual(len(picked), 3)
+        self.assertEqual(picked, ("AI大模型", "AI工具", "编程开发"))
+
+    def test_parse_tags_fallback_without_json(self):
+        from src.media.tagging import parse_tags
+        self.assertEqual(parse_tags("我觉得这篇属于 AI工具 吧"), ("AI工具",))
+
+    def test_classify_returns_empty_when_unavailable(self):
+        from src.media.tagging import TagClassifier
+        classifier = TagClassifier(base_url="http://127.0.0.1:9", model="nope", timeout=1)
+        self.assertEqual(classifier.classify("很长的正文内容"), ())
+
+    def test_classify_parses_stub_response(self):
+        import threading, http.server, json as _json
+        from src.media.tagging import TagClassifier
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                b = _json.dumps({"data": [{"id": "stub"}]}).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+            def do_POST(self):  # noqa: N802
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                b = _json.dumps({"choices": [{"message": {"content": '["AI工具","效率工具"]'}}]}).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+            def log_message(self, *a): return
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        c = TagClassifier(base_url=f"http://127.0.0.1:{server.server_address[1]}", model="stub", timeout=5)
+        self.assertEqual(c.classify("some content"), ("AI工具", "效率工具"))

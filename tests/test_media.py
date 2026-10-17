@@ -38,6 +38,7 @@ from src.database import connect  # noqa: E402
 from src.ingest import media_key_for  # noqa: E402
 from src.markdown import MarkdownWriter, RenderOptions, render_markdown  # noqa: E402
 from src.media import (  # noqa: E402
+
     MediaLocalizer,
     MediaSource,
     MediaUpdate,
@@ -51,6 +52,9 @@ PHOTO_URL = "https://pbs.twimg.com/media/SAMPLE0000000001.png"
 AVATAR_URL = "https://pbs.twimg.com/profile_images/0000000000000000001/sample_400x400.jpg"
 PHOTO_TWEET = "1900000000000000101"
 
+
+import os as _os
+_os.environ.setdefault("XBK_TRANSLATE", "0")   # 测试不调用真实本地模型（F-BYNLUY-03）
 
 class MediaTestCase(unittest.TestCase):
     """共用夹具：临时的上游缓存目录 + 临时的知识库目录。"""

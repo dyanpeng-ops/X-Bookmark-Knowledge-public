@@ -68,6 +68,7 @@ CONTENT_COLUMNS: dict[str, tuple[str, ...]] = {
         "title",
         "domain",
         "content_path",
+        "image_url",       # 队列：纯链书签封面图（og:image），内容索引来源
     ),
 }
 

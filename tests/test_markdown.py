@@ -30,6 +30,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.cli import EXIT_FAILURE, EXIT_OK, main as cli_main  # noqa: E402
 from src.database import connect  # noqa: E402
 from src.markdown import (  # noqa: E402
+
     MarkdownWriter,
     RenderOptions,
     build_frontmatter,
@@ -70,6 +71,9 @@ ENRICH = {
 }
 
 
+import os as _os
+_os.environ.setdefault("XBK_TRANSLATE", "0")   # 测试不调用真实本地模型（F-BYNLUY-03）
+
 def render(overrides=None, enrich=None, **kwargs):
     up = dict(UPMAP)
     up.update(overrides or {})
@@ -78,45 +82,23 @@ def render(overrides=None, enrich=None, **kwargs):
 
 class RenderTests(unittest.TestCase):
     def test_frontmatter_has_required_keys_in_order(self):
+        """队列 #27 起：frontmatter **只保留 title**（用户要求精简属性）。"""
+
         text = render()
         fm = text.split("---\n", 1)[1].split("\n---")[0]
-        lines = [ln for ln in fm.split("\n") if ln.strip()]
-        keys = [ln.split(":", 1)[0].strip() for ln in lines]
-        self.assertEqual(
-            keys,
-            [
-                "tweet_id",
-                "title",
-                "url",
-                "author_handle",
-                "author_name",
-                "created_at",
-                "language",
-                "media_count",
-                "link_count",
-                "engagement",
-                "tags",
-                "primary_category",
-                "folder_names",
-                "source",
-            ],
-        )
+        keys = [ln.split(":", 1)[0].strip() for ln in fm.split("\n") if ln.strip()]
+        self.assertEqual(keys, ["title"])
 
     def test_frontmatter_values(self):
-        fm = build_frontmatter(UPMAP, ENRICH)
-        self.assertEqual(fm["tweet_id"], "1900000000000000101")
-        self.assertEqual(fm["created_at"], "2026-09-14T01:24:21Z")
-        self.assertEqual(fm["media_count"], 1)
-        self.assertEqual(fm["link_count"], 2)
-        self.assertEqual(fm["primary_category"], "tools")
-        self.assertEqual(fm["folder_names"], ["A", "B"])
-        self.assertEqual(fm["tags"], ["tag1"])
+        text = render()
+        self.assertIn("title: ", text)
+        self.assertNotIn("tweet_id:", text)
 
     def test_sections_are_rendered(self):
         """队列 #24 起：`media` **不再是独立段落**，图片内嵌在 `## tweet` 之后。"""
 
         text = render()
-        for section in ("## tweet", "## external_links", "## metadata", "## source"):
+        for section in ("## tweet", "## external_links", "## source"):
             self.assertIn(section, text)
         self.assertNotIn("## media", text)
         self.assertIn("> 第一行", text)
@@ -470,3 +452,88 @@ class DeriveTitleTests(unittest.TestCase):
         text = render_markdown(up, None, RenderOptions())
         self.assertIn("title: 逸尘 分享的链接（2026-03-05）", text)
         self.assertIn("# 逸尘 分享的链接（2026-03-05）", text)
+
+
+class XLinkCardTests(unittest.TestCase):
+    """队列 #27 续：X 站内链（links 跳过的）用派生标签渲染成卡片，不伪造标题。"""
+
+    def test_x_article_link_becomes_derived_card(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        up = {"tweetId": "1", "text": "x.com/i/article/9…",
+              "postedAt": "Thu Mar 05 14:50:22 +0000 2026",
+              "links": ["http://x.com/i/article/2029556151587946496"]}
+        text = render_markdown(up, None, RenderOptions())
+        self.assertIn(
+            "- [X 文章（2026-03-05）](http://x.com/i/article/2029556151587946496)", text
+        )
+
+    def test_other_bare_link_stays_plain(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        up = {"tweetId": "1", "text": "看这个", "links": ["https://example.com/x"]}
+        text = render_markdown(up, None, RenderOptions())
+        self.assertIn("- https://example.com/x", text)
+
+
+class LinkCoverCardTests(unittest.TestCase):
+    """用户要求：纯链书签的链接卡片带封面图（渲染层，只认 image_path）。"""
+
+    def test_cover_image_rendered_when_image_path_present(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        up = {"tweetId": "1", "text": "看这个", "links": ["https://example.com/x"]}
+        text = render_markdown(
+            up, None, RenderOptions(),
+            link_details={"https://example.com/x": {
+                "title": "示例站点", "fetch_status": "FETCHED",
+                "image_path": "X-Bookmarks/2026/09/assets/1/links/cover.jpg",
+            }},
+        )
+        self.assertIn("  ![封面](X-Bookmarks/2026/09/assets/1/links/cover.jpg)", text)
+
+    def test_no_cover_when_image_path_absent(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        up = {"tweetId": "1", "text": "看这个", "links": ["https://example.com/x"]}
+        text = render_markdown(up, None, RenderOptions(),
+                               link_details={"https://example.com/x": {"title": "示例站点"}})
+        self.assertNotIn("![封面]", text)
+
+
+class TranslationRenderTests(unittest.TestCase):
+    """用户要求：英文书签中文译文在前、原文在下；标题也翻译。"""
+
+    UP = {"tweetId": "1", "text": "What if your bookmarks could be read locally?",
+          "postedAt": "Thu Sep 13 00:00:00 +0000 2026", "media": [], "links": []}
+
+    def test_chinese_first_then_original(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        text = render_markdown(self.UP, None, RenderOptions(),
+                               translation={"text": "如果书签能在本地阅读会怎样？",
+                                            "title": "如果书签能在本地阅读会怎样"})
+        self.assertIn("> 如果书签能在本地阅读会怎样？", text)
+        self.assertIn("> **原文**", text)
+        self.assertIn("> What if your bookmarks could be read locally?", text)
+        self.assertLess(text.index("如果书签能在本地阅读"), text.index("**原文**"))
+        self.assertIn("# 如果书签能在本地阅读会怎样", text)
+        self.assertIn("title: 如果书签能在本地阅读会怎样", text)
+
+    def test_no_translation_keeps_behaviour(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        text = render_markdown(self.UP, None, RenderOptions())
+        self.assertNotIn("**原文**", text)
+
+
+class TagsRenderTests(unittest.TestCase):
+    """队列 #28：frontmatter 写入预设标签（1–3 个）。"""
+
+    def test_tags_in_frontmatter(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        up = {"tweetId": "1", "text": "用 AI 工具提升效率", "media": [], "links": []}
+        text = render_markdown(up, None, RenderOptions(), tags=["AI工具", "效率工具"])
+        self.assertIn("tags: ", text)
+        self.assertIn("AI工具", text)
+        self.assertIn("效率工具", text)
+
+    def test_no_tags_keeps_structure(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        up = {"tweetId": "1", "text": "正文", "media": [], "links": []}
+        text = render_markdown(up, None, RenderOptions())
+        self.assertNotIn("tags:", text)

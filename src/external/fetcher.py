@@ -227,6 +227,45 @@ def _charset_from_content_type(content_type: str | None) -> str | None:
     return match.group(1) if match else None
 
 
+#: `og:image` / `twitter:image` meta 提取（用户要求：纯链书签抓链接图片+标题做封面卡）
+_OG_IMAGE_PATTERNS = (
+    re.compile(
+        r'<meta[^>]+property\s*=\s*["\']og:image(?::secure_url)?["\'][^>]*content\s*=\s*["\']([^"\']+)["\']',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'<meta[^>]+content\s*=\s*["\']([^"\']+)["\'][^>]*property\s*=\s*["\']og:image(?::secure_url)?["\']',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'<meta[^>]+name\s*=\s*["\']twitter:image["\'][^>]*content\s*=\s*["\']([^"\']+)["\']',
+        re.IGNORECASE,
+    ),
+)
+
+
+def extract_og_image(html: str, base_url: str | None = None) -> str | None:
+    """从 HTML 提取 `og:image` / `twitter:image` 的绝对 URL（找不到返回 None）。
+
+    相对地址用 ``base_url`` 补全；解析失败一律返回 None（**不猜、不伪造**）。
+    """
+
+    from urllib.parse import urljoin, urlparse
+
+    text = str(html or "")
+    for pattern in _OG_IMAGE_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        raw = match.group(1).strip()
+        if not raw:
+            continue
+        absolute = urljoin(base_url, raw) if base_url else raw
+        if urlparse(absolute).scheme in ("http", "https"):
+            return absolute
+    return None
+
+
 def _charset_from_meta(body: bytes) -> str | None:
     match = _META_CHARSET_RE.search(body[:_META_SNIFF_BYTES])
     if not match:

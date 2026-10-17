@@ -140,7 +140,6 @@ markdown:
     # 队列 #24 起：media 不再是独立段（图片内嵌在 tweet 之后）
     - article
     - external_links
-    - metadata
     - ai_analysis
     - source
   overwrite_existing: false        # 幂等：已存在且未变更则跳过
