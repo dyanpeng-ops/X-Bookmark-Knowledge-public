@@ -385,6 +385,7 @@ def _cmd_process(args: argparse.Namespace, config: AppConfig) -> int:
         media_lookup=media_paths.get,
         link_lookup=link_details.get,
         media_captions=media_captions.get,
+        media_link_mode=str(section.get("media_link_mode") or "note-relative"),
     )
     stats = writer.run(tweet_ids)
 

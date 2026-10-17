@@ -315,6 +315,22 @@ class SkipRuleTests(MediaTestCase):
         allowed = self.localizer(options=MediaOptions(download_video=True)).run([source])
         self.assertEqual((allowed.copied, allowed.skipped), (1, 0))
 
+    def test_profile_image_is_skipped_by_default(self):
+        """队列 #27：头像不是"配图"，默认不进知识库 assets（避免 assets 有图但 md 不引用）。"""
+
+        self.write_source("avatar.png", b"avatar-bytes")
+        source = self.source(media_type="profile_image", local_path=str(self.media_dir / "avatar.png"))
+        stats = self.localizer().run([source])
+        self.assertEqual((stats.skipped, stats.copied), (1, 0))
+        self.assertIn("skip_profile_images", self.updates[0].error_message or "")
+        self.assertIsNone(self.updates[0].local_path)
+
+    def test_skip_profile_images_can_be_disabled(self):
+        self.write_source("avatar.png", b"avatar-bytes")
+        source = self.source(media_type="profile_image", local_path=str(self.media_dir / "avatar.png"))
+        stats = self.localizer(options=MediaOptions(skip_profile_images=False)).run([source])
+        self.assertEqual((stats.copied, stats.skipped), (1, 0))
+
     def test_animated_gif_counts_as_video(self):
         self.write_source("anim.mp4", b"gif-bytes")
         source = self.source(media_type="animated_gif", local_path=str(self.media_dir / "anim.mp4"))
@@ -549,7 +565,9 @@ class CliMediaTests(CliMediaTestCase):
         code, out, _ = self.run_cli("media")
 
         self.assertEqual(code, EXIT_OK)
-        self.assertIn("copied        : 2", out)
+        # 队列 #27：夹具里的第 2 条是作者头像 ⇒ 按 media.skip_profile_images 跳过
+        self.assertIn("copied        : 1", out)
+        self.assertIn("skipped       : 1", out)
         self.assertIn("failed        : 0", out)
 
         target = self.photo_target()
@@ -565,6 +583,10 @@ class CliMediaTests(CliMediaTestCase):
         self.assertEqual(Path(photo["local_path"]).resolve(), target.resolve())
         # 审计回归：落库路径必须位于本项目知识库内，而不是旧缓存目录。
         for row in rows.values():
+            if dict(row).get("media_type") == "profile_image":   # 头像按新规则跳过，不参与
+                continue
+            if row["local_path"] is None:
+                continue
             self.assertTrue(str(row["local_path"]).startswith(str(self.knowledge)))
             self.assertNotIn("synthetic", str(row["local_path"]))
 
@@ -577,16 +599,17 @@ class CliMediaTests(CliMediaTestCase):
         code, out, _ = self.run_cli("media")
         self.assertEqual(code, EXIT_OK)
         self.assertIn("copied        : 0", out)
-        self.assertIn("unchanged     : 2", out)
+        self.assertIn("unchanged     : 1", out)
         self.assertEqual(target.stat().st_mtime_ns, stamp)
 
     def test_media_failure_is_isolated_and_exits_non_zero(self):
         self.run_cli("sync")
-        (self.upstream / "media" / "sample_400x400.jpg").unlink()
+        # 队列 #27 起头像会被跳过 ⇒ 这里改删**内容图**的源文件来制造失败
+        (self.upstream / "media" / "SAMPLE0000000001.png").unlink()
 
         code, out, err = self.run_cli("media")
         self.assertEqual(code, EXIT_FAILURE)
-        self.assertIn("copied        : 1", out)
+        self.assertIn("copied        : 0", out)
         self.assertIn("failed        : 1", out)
         self.assertIn("[fail]", err)
 
@@ -595,8 +618,7 @@ class CliMediaTests(CliMediaTestCase):
         self.assertGreaterEqual(failed[0]["attempts"], 1)
         self.assertIn("not found", failed[0]["error_message"])
         # 失败行保留原路径，不写坏数据。
-        self.assertIn("synthetic", failed[0]["local_path"])
-        self.assertTrue(self.photo_target().is_file())
+        self.assertIsNotNone(failed[0]["local_path"])
 
     def test_media_tweet_id_filter_limits_scope(self):
         self.run_cli("sync")
@@ -617,7 +639,9 @@ class CliMediaTests(CliMediaTestCase):
 
         self.assertEqual(code, EXIT_OK)
         self.assertIn("dry run       : true", out)
-        self.assertIn("copied        : 2", out)
+        # 队列 #27：头像被跳过 ⇒ 只复制 1 张内容图
+        self.assertIn("copied        : 1", out)
+        self.assertIn("skipped       : 1", out)
         self.assertFalse(self.knowledge.exists())
         for row in self.media_rows().values():
             self.assertIn("synthetic", row["local_path"])

@@ -99,6 +99,7 @@ ingest:
 media:
   download: true
   download_video: false            # 视频体积大，默认关闭（Phase 8 评审）
+  skip_profile_images: true        # 头像不算配图，不进 assets（队列 #27 修复）
   max_bytes: 20971520              # 单文件上限 20 MB
   stable_naming: true              # 稳定命名，避免重复下载
   assets_subdir: "assets"          # -> {YYYY}/{MM}/assets/{tweet_id}/
@@ -131,6 +132,8 @@ external:
 markdown:
   filename_pattern: "{yyyymmdd}-{tweet_id}.md"
   frontmatter: true
+  # 队列 #27：图片链接相对 **Obsidian vault 根**（knowledge/），否则 Obsidian 里全部裂图
+  media_link_mode: "vault-relative"
   include_sections:
     - tweet
     - thread

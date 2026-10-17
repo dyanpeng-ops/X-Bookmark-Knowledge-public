@@ -56,6 +56,7 @@ class MarkdownWriter:
         media_lookup: Callable[[str], Mapping[str, str]] | None = None,
         link_lookup: Callable[[str], Mapping[str, Mapping[str, Any]]] | None = None,
         media_captions: Callable[[str], Mapping[str, Any]] | None = None,
+        media_link_mode: str = "note-relative",
     ) -> None:
         """`loader` 接受 tweet_id、返回原始归档 dict（含 `upstream`/`enrichment`）。
 
@@ -84,6 +85,9 @@ class MarkdownWriter:
         self._link_lookup = link_lookup
         #: 队列 #24：`tweet_id -> {source_url: MediaDescription}`，供内嵌图片 caption 使用。
         self._media_captions = media_captions
+        #: 队列 #27：图片链接写法。`note-relative`=相对当前 md（GitHub 等通用）；
+        #: `vault-relative`=相对知识库根（= Obsidian vault 根），Obsidian 默认按 vault 根解析。
+        self._media_link_mode = media_link_mode
 
     def _resolve_loader(self) -> Callable[[str], Mapping[str, Any]]:
         if self._loader is not None:
@@ -243,6 +247,13 @@ class MarkdownWriter:
         candidate = Path(text)
         if not candidate.is_absolute():
             candidate = self._knowledge_dir / candidate
+        if self._media_link_mode == "vault-relative":
+            # Obsidian vault 根 = knowledge_dir 的上一级（如 knowledge/）。
+            vault_root = self._knowledge_dir.parent
+            try:
+                return candidate.relative_to(vault_root).as_posix()
+            except ValueError:
+                pass                       # 不在 vault 内 ⇒ 回退 note-relative
         try:
             display = os.path.relpath(candidate, target.parent)
         except ValueError:

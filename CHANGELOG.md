@@ -9,6 +9,35 @@
 
 ---
 
+## [Phase 10 · md 阅读体验] 2026-10-17 — **D 阶段（①/3）**：头像不再误入 `assets/`
+
+> 触发：队列 #27（用户已批准）。komi 在 Obsidian 实测 `20260305-…` 发现「`assets/` 有 JPG 但 md 没引用」。
+
+### 根因
+
+该 JPG 是**作者头像**（`media_type='profile_image'`，来源 `pbs.twimg.com/profile_images/...`），
+**不是内容配图** ⇒ md 的 `media_count=0` 本就正确。问题在于**本地化把头像放进了知识库 `assets/`**，
+让 `assets/` 出现"有图但 md 不引用"的错觉。
+
+### Fixed
+
+- `MediaOptions.skip_profile_images`（默认 **true**）：`media` 子命令**跳过头像/横幅**，不再写入 `assets/`；
+  `localizer` 新增 `PROFILE_IMAGE_MEDIA_TYPES` 判定，跳过原因写入 `error_message` 便于审计。
+- `config/config.yaml` 与 `config/config.example.yaml` 同步新增该开关。
+
+### Verified
+
+- 全量测试 **718 用例 OK**（+3：头像默认跳过 / 可放开 / **有本地内容图必被引用**的回归用例）；
+- 真机 `media`：`copied 0 / unchanged 28 / skipped 11（5 头像 + 6 视频）/ failed 0`。
+
+### 待办（#27 余下两项）
+
+- ② 无标题与 ③ 外链裸链：该推文外链 **HTTP 404**、49 份 raw **0 份**带文章标题 ⇒ 按"标题不伪造"当前应**留空**；
+  是否接受**派生标签**（作者＋日期＋类型）待用户裁决。
+- 既有 5 张头像文件与 `local_path` 的**清理**需用户批准（涉及知识库文件删除）。
+
+---
+
 ## [Phase 10 · md 阅读体验] 2026-10-17 — **C 阶段**：OCR 质量门（乱码/过碎也补视觉）
 
 > 触发：队列 #26（用户已批准，F-PG2A3X-01 裁决落地）。

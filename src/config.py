@@ -236,6 +236,8 @@ class MediaOptions:
 
     download: bool = True
     download_video: bool = False
+    #: 头像（profile_image）不是"配图"：默认**不**本地化进知识库 assets（队列 #27 修复）。
+    skip_profile_images: bool = True
     max_bytes: int = DEFAULT_MAX_MEDIA_BYTES
     stable_naming: bool = True
     assets_subdir: str = "assets"
@@ -392,6 +394,9 @@ def load_media_options(section: Mapping[str, Any] | None) -> MediaOptions:
     return MediaOptions(
         download=_as_bool(data.get("download"), "media.download", True),
         download_video=_as_bool(data.get("download_video"), "media.download_video", False),
+        skip_profile_images=_as_bool(
+            data.get("skip_profile_images"), "media.skip_profile_images", True
+        ),
         max_bytes=_as_int(data.get("max_bytes"), "media.max_bytes", DEFAULT_MAX_MEDIA_BYTES),
         stable_naming=_as_bool(data.get("stable_naming"), "media.stable_naming", True),
         assets_subdir=_as_str(data.get("assets_subdir"), "media.assets_subdir", "assets") or "assets",

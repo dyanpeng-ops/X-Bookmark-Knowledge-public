@@ -45,6 +45,7 @@ YEAR_MONTH_LAYOUT = "year_month"
 
 FRONTMATTER_KEYS: tuple[str, ...] = (
     "tweet_id",
+    "title",
     "url",
     "author_handle",
     "author_name",
@@ -181,6 +182,51 @@ def section_names_for(options: RenderOptions) -> list[str]:
     return result
 
 
+#: 一条推文正文若"只有链接/转发短链"，视为**无可读标题**的类目（队列 #27 ②）。
+_BARE_LINK_RE = re.compile(r"^(?:https?://|x\.com/|t\.co/|www\.)", re.IGNORECASE)
+
+
+def _looks_like_bare_link(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return True
+    # 去掉所有 URL（含无 scheme 的域名与 X 短链）后若几乎没剩内容，就是"纯链接"
+    without_urls = re.sub(r"(?:https?://|www\.)\S+", "", stripped)
+    without_urls = re.sub(r"\b(?:x\.com|twitter\.com|t\.co)/\S*", "", without_urls)
+    without_urls = re.sub(r"[…\.\s]+", "", without_urls)
+    return len(without_urls) < 10
+
+
+def derive_title(
+    upstream: Mapping[str, Any], enrichment: Mapping[str, Any] | None = None
+) -> str | None:
+    """给出可读标题（队列 #27 ②，用户选 A：允许**派生标签**，但绝不冒充原文标题）。
+
+    优先级：
+    1. 真实标题（`enrichment.articleTitle`）；
+    2. 正文**首句**（正文是真实文字时取首句，截断 40 字）；
+    3. 正文为空 / 纯链接 ⇒ **派生标签**：`<作者> 分享的链接（YYYY-MM-DD）`
+       —— 事实性描述（作者＋日期＋类型），不伪造文章名。
+    """
+
+    enrich = enrichment or {}
+    real = str(enrich.get("articleTitle") or "").strip()
+    if real:
+        return real
+    text = str(upstream.get("text") or "").strip()
+    if text and not _looks_like_bare_link(text):
+        first = re.split(r"[。！？!?\n]", text, maxsplit=1)[0].strip()
+        if first:
+            return first[:40] + ("…" if len(first) > 40 else "")
+    author = str(upstream.get("authorName") or upstream.get("authorHandle") or "").strip()
+    created = _iso_created_at(upstream) or ""
+    day = created[:10] if created else ""
+    label = "分享的链接"
+    if not author and not day:
+        return None
+    return f"{author} {label}（{day}）".strip()
+
+
 def build_frontmatter(
     upstream: Mapping[str, Any], enrichment: Mapping[str, Any] | None
 ) -> dict[str, Any]:
@@ -189,8 +235,10 @@ def build_frontmatter(
     engagement = upstream.get("engagement") or {}
     media_urls = upstream.get("media") or ()
     tags = list(upstream.get("tags") or ())
+    derived_title = derive_title(upstream, enrichment)
     return {
         "tweet_id": upstream.get("tweetId"),
+        "title": derived_title,
         "url": upstream.get("url"),
         "author_handle": upstream.get("authorHandle"),
         "author_name": upstream.get("authorName"),
@@ -488,6 +536,11 @@ def render_markdown(
                 lines.append(f"{key}: {_dump_scalar(frontmatter[key])}")
         lines.append("---")
         parts.append("\n".join(lines))
+
+    # 队列 #27 ②：正文前加可读标题（真实标题优先，纯链接类用派生标签）
+    doc_title = derive_title(upstream, enrichment)
+    if doc_title:
+        parts.append(f"# {doc_title}")
 
     for name in section_names_for(options):
         renderer = _SECTION_RENDERERS.get(name)

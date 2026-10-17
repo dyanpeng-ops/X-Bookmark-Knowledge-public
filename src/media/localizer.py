@@ -57,6 +57,7 @@ from src.markdown.render import date_parts
 __all__ = [
     "DEFAULT_ASSETS_SUBDIR",
     "VIDEO_MEDIA_TYPES",
+    "PROFILE_IMAGE_MEDIA_TYPES",
     "MediaError",
     "MediaLocalisationError",
     "MediaSource",
@@ -73,6 +74,8 @@ DEFAULT_ASSETS_SUBDIR = "assets"
 
 #: 需要 `media.download_video: true` 才本地化的媒体类型（推文媒体对象里的原始 type）。
 VIDEO_MEDIA_TYPES = frozenset({"video", "animated_gif"})
+#: 头像类型（不是"配图"）：默认不本地化（队列 #27）
+PROFILE_IMAGE_MEDIA_TYPES = frozenset({"profile_image", "profile_banner"})
 
 _UNSAFE_COMPONENT = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_SUFFIX = re.compile(r"\.[A-Za-z0-9]{1,8}$")
@@ -313,6 +316,8 @@ class MediaLocalizer:
             return f"upstream download status is {status or 'UNKNOWN'}"
         if self._is_video(source) and not self._options.download_video:
             return "video localisation disabled (media.download_video=false)"
+        if self._options.skip_profile_images and self._is_profile_image(source):
+            return "profile image skipped (media.skip_profile_images=true)"
         return None
 
     def _materialise(self, source: MediaSource) -> str:
@@ -385,6 +390,9 @@ class MediaLocalizer:
 
     def _is_video(self, source: MediaSource) -> bool:
         return str(source.media_type or "").strip().lower() in VIDEO_MEDIA_TYPES
+
+    def _is_profile_image(self, source: MediaSource) -> bool:
+        return str(source.media_type or "").strip().lower() in PROFILE_IMAGE_MEDIA_TYPES
 
 
     def _copy(self, source_file: Path, target: Path) -> None:

@@ -86,6 +86,7 @@ class RenderTests(unittest.TestCase):
             keys,
             [
                 "tweet_id",
+                "title",
                 "url",
                 "author_handle",
                 "author_name",
@@ -154,6 +155,14 @@ class RenderTests(unittest.TestCase):
         image_lines = [line for line in text.split("\n") if line.startswith("![")]
         self.assertEqual(len(image_lines), 1, image_lines)
         self.assertEqual(image_lines[0].count("!["), 2, image_lines)
+
+    def test_local_content_media_is_always_referenced(self):
+        """队列 #27 回归：**有本地内容图就必须被引用**（且改用本地路径，不再留远程 URL）。"""
+
+        text = render(media_files={"https://pbs.twimg.com/media/AAA.png": "assets/6000/abc.png"})
+        self.assertIn("](assets/6000/abc.png)", text)
+        self.assertNotIn("https://pbs.twimg.com/media/AAA.png", text)
+        self.assertNotIn("## media", text)
 
     def test_media_placeholder_when_none(self):
         """无媒体 ⇒ **不渲染任何图片块**（旧版会给 `_无媒体_` 占位段）。"""
@@ -430,3 +439,34 @@ class CliProcessTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+class DeriveTitleTests(unittest.TestCase):
+    """队列 #27 ②：真实标题优先；纯链接类用派生标签（用户选 A，不冒充原文标题）。"""
+
+    def test_real_article_title_wins(self):
+        from src.markdown.render import derive_title
+        self.assertEqual(
+            derive_title({"text": "https://t.co/x"}, {"articleTitle": "真正的文章标题"}),
+            "真正的文章标题",
+        )
+
+    def test_prose_uses_first_sentence(self):
+        from src.markdown.render import derive_title
+        title = derive_title({"text": "别再问我拿啥下载视频了。这篇全给你兜住",
+                              "authorName": "某作者",
+                              "postedAt": "Thu Sep 13 00:00:00 +0000 2026"})
+        self.assertEqual(title, "别再问我拿啥下载视频了")
+
+    def test_bare_link_gets_derived_label(self):
+        from src.markdown.render import derive_title
+        title = derive_title({"text": "x.com/i/article/2029…", "authorName": "逸尘",
+                              "postedAt": "Thu Mar 05 14:50:22 +0000 2026"})
+        self.assertEqual(title, "逸尘 分享的链接（2026-03-05）")
+
+    def test_frontmatter_and_h1_contain_title(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        up = {"tweetId": "1", "text": "x.com/i/article/9…", "authorName": "逸尘",
+              "postedAt": "Thu Mar 05 14:50:22 +0000 2026", "media": [], "links": []}
+        text = render_markdown(up, None, RenderOptions())
+        self.assertIn("title: 逸尘 分享的链接（2026-03-05）", text)
+        self.assertIn("# 逸尘 分享的链接（2026-03-05）", text)
