@@ -130,7 +130,7 @@ external:
 
 # ── Markdown ─────────────────────────────────────────────────
 markdown:
-  filename_pattern: "{yyyymmdd}-{tweet_id}.md"
+  filename_pattern: "{title}.md"        # 队列 #27：按书签标题命名（无标题回退日期-id）
   frontmatter: true
   # 队列 #27：图片链接相对 **Obsidian vault 根**（knowledge/），否则 Obsidian 里全部裂图
   media_link_mode: "vault-relative"

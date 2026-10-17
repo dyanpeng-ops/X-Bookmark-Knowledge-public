@@ -270,19 +270,52 @@ def date_parts(created_at: str | None) -> tuple[str, str, str]:
     return year, month, year + month + day
 
 
+#: 文件名里不允许/不友好的字符（Obsidian 与常见文件系统）
+_UNSAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|\r\n\t]+')
+
+
+def sanitize_filename(title: str, max_len: int = 60) -> str:
+    """把标题清洗成可用的文件名（队列 #27：按标题命名）。
+
+    * 非法字符（`\\ / : * ? " < > |` 与换行/制表符）→ 空格；
+    * 连续空白折叠；去掉首尾空格与点号（避免隐藏文件/尾点问题）；
+    * 超长按 ``max_len`` 截断（按字符，不切坏多字节）。
+    """
+
+    cleaned = _UNSAFE_FILENAME_RE.sub(" ", str(title or "")).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    if len(cleaned) > max_len:
+        cleaned = cleaned[:max_len].rstrip(" .")
+    return cleaned
+
+
 def relative_output_path(
     tweet_id: str,
     created_at: str | None,
     options: RenderOptions,
+    title: str | None = None,
 ) -> Path:
-    """计算知识库内的相对路径：`YYYY/MM/YYYYMMDD-{tweet_id}.md`。
+    """计算知识库内的相对路径。
 
-    `created_at` 必须是 ISO-8601 字符串（或 None）；年份/月份缺失时落到
-    `unknown/unknown/`，文件名里的日期同样回退为 `unknown`。
+    * `filename_pattern` 含 `{title}` 且标题可用 ⇒ **按书签标题命名**（队列 #27 用户要求），
+      如 `别再问我拿啥下载视频了.md`；
+    * 标题为空/清洗后为空 ⇒ **回退** `YYYYMMDD-{tweet_id}.md`（不伪造文件名）。
+
+    `created_at` 必须是 ISO-8601 字符串（或 None）；年份/月份缺失时落到 `unknown/unknown/`。
     """
 
     year, month, yyyymmdd = date_parts(created_at)
-    filename = options.filename_pattern.format(yyyymmdd=yyyymmdd, tweet_id=tweet_id)
+    pattern = options.filename_pattern
+    safe_title = sanitize_filename(title or "")
+    if "{title}" in pattern:
+        if safe_title:
+            filename = pattern.format(
+                title=safe_title, yyyymmdd=yyyymmdd, tweet_id=tweet_id
+            )
+        else:   # 无标题 ⇒ 回退日期-id（不伪造文件名）
+            filename = "{yyyymmdd}-{tweet_id}.md".format(yyyymmdd=yyyymmdd, tweet_id=tweet_id)
+    else:
+        filename = pattern.format(yyyymmdd=yyyymmdd, tweet_id=tweet_id)
     return Path(year) / month / filename
 
 

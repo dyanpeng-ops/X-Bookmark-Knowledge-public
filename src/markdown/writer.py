@@ -144,8 +144,15 @@ class MarkdownWriter:
         """渲染一条并写盘；返回 'written' / 'unchanged' / 'conflict'。"""
 
         created_at = _iso_from_upstream(upstream)
-        rel = relative_path_for(tweet_id, created_at, self._options)
+        from .render import derive_title
+
+        rel = relative_path_for(
+            tweet_id, created_at, self._options, title=derive_title(upstream, enrichment)
+        )
         target = self._knowledge_dir / rel
+        # 重名保护：不同书签可能得到同一标题 ⇒ 追加 tweet_id 区分
+        if target.exists() and not self._target_belongs_to(target, tweet_id):
+            target = target.with_name(f"{target.stem}-{tweet_id}{target.suffix}")
 
         text = render_markdown(
             upstream,
@@ -166,6 +173,7 @@ class MarkdownWriter:
                 )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
+        self._remove_stale_siblings(tweet_id, target)     # 队列 #27：按标题重命名后清理旧文件
         self._advance(tweet_id, target)
         return "written"
 
@@ -192,6 +200,33 @@ class MarkdownWriter:
             if display:
                 resolved[str(url)] = display
         return resolved
+
+    @staticmethod
+    def _target_belongs_to(target: Path, tweet_id: str) -> bool:
+        """判断目标文件是否属于该 tweet（读 frontmatter 的 tweet_id）。"""
+
+        try:
+            head = target.read_text(encoding="utf-8")[:400]
+        except OSError:
+            return False
+        return f"tweet_id: {tweet_id}" in head
+
+    def _remove_stale_siblings(self, tweet_id: str, keep: Path) -> int:
+        """按标题重命名后，删除同一目录下旧的 `*-{tweet_id}.md`（队列 #27）。"""
+
+        removed = 0
+        try:
+            for old in keep.parent.glob(f"*-{tweet_id}.md"):
+                if old == keep or not old.is_file():
+                    continue
+                if not self._target_belongs_to(old, tweet_id):
+                    continue            # 不是这条书签的文件，绝不误删
+                old.unlink()
+                removed += 1
+                logger.info("removed stale markdown after rename: %s", old.name)
+        except OSError as exc:  # noqa: BLE001
+            logger.warning("failed to remove stale markdown for %s: %s", tweet_id, exc)
+        return removed
 
     def _resolve_media_captions(self, tweet_id: str) -> dict[str, Any]:
         """取出本条的配图描述（队列 #24 A 阶段）。
@@ -281,10 +316,10 @@ def _iso_from_upstream(upstream: Mapping[str, Any]) -> str | None:
 
 
 def relative_path_for(
-    tweet_id: str, created_at: str | None, options: RenderOptions
+    tweet_id: str, created_at: str | None, options: RenderOptions, title: str | None = None
 ) -> Path:
     """由 ISO created_at 计算知识库内相对路径（复用 render.relative_output_path）。"""
 
     from .render import relative_output_path
 
-    return relative_output_path(tweet_id, created_at, options)
+    return relative_output_path(tweet_id, created_at, options, title=title)
