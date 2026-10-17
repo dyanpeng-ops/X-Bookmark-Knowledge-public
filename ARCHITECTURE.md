@@ -649,3 +649,20 @@ X-Bookmark-Knowledge/
 | 6 | 无 SQLite 恢复完整知识库 | ⚠️ | ❌ 无法恢复 | 富化内容唯一载体是 `data/raw/`（fieldtheory 格式、不入 Git），normalized 未实现 → 无跨设备载体 |
 
 > 说明：第 3、4 项原为「设计有漏洞」，本轮已通过 R6/R7 补齐；第 2、6 项的「⚠️」是**实现缺失**（依赖 normalized/Canonical 落地后自动满足），非设计缺陷。真正的实现性返工风险已收敛到「rebuild-index 字段对齐」（§6.3.2）与「RawCollectorData 契约冻结」（§3.2.1）两处，均在进入对应 Phase（4 / 3）前定稿。
+
+
+---
+
+## 媒体描述管线（队列 #24 / A + B 阶段，2026-10-17）
+
+```text
+配图 → ① 本地 OCR（macOS Vision，A 阶段）──有文字──→ caption（alt + 引用块，可检索）
+                                    └──无文字──→ ② 本地视觉模型（Bionic/Saluki-27B + mmproj）
+                                                    └─ 成功 → caption
+                                                    └─ 不可用/失败 → 如实标记"未识别到文字"（不伪造）
+```
+
+- **全部本地**：Vision 框架 + `127.0.0.1:1235`（Bionic），**零 API 花费、数据不出本机**；
+- **增量**：描述以图片内容 **sha256** 为键缓存于 `data/state/media-descriptions.json`（gitignored）；
+- **不阻断**：任一环节失败只影响该图，不影响整篇 Markdown 生成；
+- **排版**：图片内嵌在 `## tweet` 正文之后、多图同行，caption 为纯文本 ⇒ 可被全文检索。

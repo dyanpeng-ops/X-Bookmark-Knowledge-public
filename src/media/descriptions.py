@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.media.vision import VisionEngine, VisionError, VisionUnavailableError
 from src.media.vision_ocr import OcrEngine, OcrError, OcrUnavailableError
 
 __all__ = [
@@ -32,7 +33,8 @@ __all__ = [
 ]
 
 #: 缓存文件 schema 版本（结构变更时递增，旧缓存自动失效）。
-DESCRIPTION_SCHEMA = 2
+#: v3（2026-10-17）：B 阶段新增 vision 描述 ⇒ 旧的 `none` 缓存失效，可补"看图说话"。
+DESCRIPTION_SCHEMA = 3
 
 #: caption 里正文的最大长度（超出截断并加省略号；完整文本仍在缓存/OCR 里）。
 CAPTION_MAX_CHARS = 600
@@ -127,14 +129,17 @@ class MediaDescriptionStore:
         store_path: str | os.PathLike[str] | None = None,
         root: str | os.PathLike[str] | None = None,
         engine: Any | None = None,
+        vision: Any | None = None,
     ) -> None:
         self._root = Path(root) if root is not None else Path(__file__).resolve().parents[2]
         self._store_path = Path(store_path) if store_path is not None else default_store_path(self._root)
         self._engine = engine if engine is not None else OcrEngine(root=self._root)
+        #: B 阶段：**仅当 OCR 无文字**时才调用的本地视觉后端；None = 不启用视觉。
+        self._vision = vision if vision is not None else VisionEngine()
         self._entries: dict[str, MediaDescription] = {}
         self._dirty = False
         self._loaded = False
-        self.stats = {"hit": 0, "ocr": 0, "no_text": 0, "failed": 0}
+        self.stats = {"hit": 0, "ocr": 0, "vision": 0, "no_text": 0, "failed": 0}
 
     # ── 持久化 ──────────────────────────────────────────────────────────────
 
@@ -206,9 +211,30 @@ class MediaDescriptionStore:
             self.stats["ocr"] += 1
             return MediaDescription(sha256=sha, text=text, source="ocr", has_text=True,
                                     langs=result.languages, described_at=stamp)
+        # —— B 阶段：OCR 无文字 ⇒ 才走本地视觉模型"看图说话"（A 阶段优先级不变）——
+        vision_text = self._try_vision(path)
+        if vision_text:
+            self.stats["vision"] += 1
+            return MediaDescription(sha256=sha, text=vision_text, source="vision", has_text=True,
+                                    langs=result.languages, described_at=stamp)
         self.stats["no_text"] += 1
         return MediaDescription(sha256=sha, text="", source="none", has_text=False,
                                 langs=result.languages, described_at=stamp)
+
+    def _try_vision(self, path: Path) -> str:
+        """尝试用本地视觉模型描述；不可用/失败一律返回空串（**不伪造、不阻断**）。"""
+
+        if self._vision is None:
+            return ""
+        try:
+            if hasattr(self._vision, "available") and not self._vision.available():
+                return ""
+            described = self._vision.describe(path)
+        except (VisionUnavailableError, VisionError, OSError):
+            # 单张失败不能拖垮整批渲染：只统计，不抛出
+            self.stats["vision_failed"] = self.stats.get("vision_failed", 0) + 1
+            return ""
+        return " ".join(str(getattr(described, "text", "") or "").split())
 
     # ── 便于渲染层使用的映射 ────────────────────────────────────────────────
 

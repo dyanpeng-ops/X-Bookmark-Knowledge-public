@@ -155,3 +155,133 @@ class OcrEngineTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+# ── B 阶段：视觉后端 ─────────────────────────────────────────────────────────
+
+
+class _StubVision:
+    """视觉桩：记录调用次数，按需返回描述或抛错。"""
+
+    def __init__(self, text: str = "一张卡通插画。", *, available: bool = True,
+                 fail: bool = False):
+        self.calls = 0
+        self._text = text
+        self._available = available
+        self._fail = fail
+
+    def available(self) -> bool:
+        return self._available
+
+    def describe(self, path):  # noqa: ANN001
+        from src.media.vision import VisionDescription, VisionError
+        self.calls += 1
+        if self._fail:
+            raise VisionError("vision boom")
+        return VisionDescription(text=self._text, model="stub")
+
+
+class VisionIntegrationTests(unittest.TestCase):
+    """队列 #24 B 阶段：**只有 OCR 无文字的图片**才走视觉；失败如实降级。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="xbook-vis-")
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.img = self.tmp / "photo.jpg"
+        self.img.write_bytes(b"fake-jpeg")
+
+    def store(self, ocr_lines, vision):
+        return MediaDescriptionStore(store_path=self.tmp / "d.json", engine=_StubEngine(ocr_lines),
+                                     vision=vision)
+
+    def test_vision_used_only_when_ocr_finds_no_text(self):
+        vision = _StubVision("一张海边日落的照片。")
+        desc = self.store([], vision).describe(self.img)
+        self.assertEqual(vision.calls, 1)
+        self.assertEqual(desc.source, "vision")
+        self.assertTrue(desc.has_text)
+        self.assertIn("海边日落", desc.text)
+
+    def test_vision_not_called_when_ocr_has_text(self):
+        vision = _StubVision()
+        desc = self.store(["截图里的文字"], vision).describe(self.img)
+        self.assertEqual(vision.calls, 0, "OCR 有文字时不得调用视觉（A 阶段优先级不变）")
+        self.assertEqual(desc.source, "ocr")
+
+    def test_vision_failure_degrades_to_none(self):
+        store = self.store([], _StubVision(fail=True))
+        desc = store.describe(self.img)
+        self.assertEqual(desc.source, "none")
+        self.assertFalse(desc.has_text)
+        self.assertEqual(store.stats.get("vision_failed"), 1)
+
+    def test_vision_unavailable_degrades_to_none(self):
+        store = self.store([], _StubVision(available=False))
+        desc = store.describe(self.img)
+        self.assertEqual(desc.source, "none")
+        self.assertEqual(store.stats.get("vision"), 0)
+
+    def test_no_vision_engine_keeps_none(self):
+        store = MediaDescriptionStore(store_path=self.tmp / "d.json",
+                                      engine=_StubEngine([]), vision=None)
+        desc = store.describe(self.img)
+        self.assertEqual(desc.source, "none")
+
+
+class VisionEngineHttpTests(unittest.TestCase):
+    """用 stdlib 起一个极简 OpenAI 兼容 stub，验证真实 HTTP 客户端（不依赖 Bionic）。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import http.server
+        import json as _json
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = _json.dumps({"data": [{"id": "stub-vision"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):  # noqa: N802
+                length = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(length)
+                body = _json.dumps({"model": "stub-vision",
+                                    "choices": [{"message": {"content": " 描述：一只猫 。 "}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):  # 静默
+                return
+
+        cls._server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        cls._thread = threading.Thread(target=cls._server.serve_forever, daemon=True)
+        cls._thread.start()
+        cls.base_url = f"http://127.0.0.1:{cls._server.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._server.shutdown()
+        cls._server.server_close()
+
+    def test_available_and_describe(self):
+        from src.media.vision import VisionEngine
+        with tempfile.TemporaryDirectory() as tmp:
+            img = Path(tmp) / "a.jpg"
+            img.write_bytes(b"jpeg-bytes")
+            engine = VisionEngine(base_url=self.base_url, model="stub-vision", timeout=10)
+            self.assertTrue(engine.available())
+            desc = engine.describe(img)
+            self.assertEqual(desc.text, "描述：一只猫 。")
+
+    def test_unavailable_when_model_missing(self):
+        from src.media.vision import VisionEngine
+        engine = VisionEngine(base_url=self.base_url, model="not-there", timeout=5)
+        self.assertFalse(engine.available())
