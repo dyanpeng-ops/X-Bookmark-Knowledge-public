@@ -222,5 +222,42 @@ class DoctorCommandTests(CliTestCase):
         self.assertIn("warnings", out)
 
 
+class PipelineCommandTests(CliTestCase):
+    def test_pipeline_runs_all_steps(self):
+        self.write_config()
+        code, out, err = self.run_cli("pipeline", "--overwrite")
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn("Pipeline 1/4", out)
+        self.assertIn("Pipeline 2/4", out)
+        self.assertIn("Pipeline 3/4", out)
+        self.assertIn("Pipeline 4/4", out)
+        self.assertIn("Pipeline 运行完毕", out)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class PipelineTimingTests(unittest.TestCase):
+    """队列 #38（O-01）：pipeline 分步耗时统计与超阈值告警。"""
+
+    def test_report_lists_stages_and_flags_over_threshold(self):
+        from src.cli.main import report_stage_timings
+        lines = report_stage_timings({"sync": 2.0, "process": 200.0}, slow_step_seconds=120)
+        text = "\n".join(lines)
+        self.assertIn("sync", text)
+        self.assertIn("process", text)
+        self.assertIn("total", text)
+        self.assertIn("slowest stage : process", text)
+        self.assertIn("超阈值", text)
+        self.assertIn("[warn]", text)
+
+    def test_report_without_over_threshold(self):
+        from src.cli.main import report_stage_timings
+        text = "\n".join(report_stage_timings({"sync": 1.0, "process": 3.0}))
+        self.assertNotIn("[warn]", text)
+        self.assertIn("slowest stage : process", text)
+
+    def test_empty_timings(self):
+        from src.cli.main import report_stage_timings
+        self.assertEqual(report_stage_timings({}), [])

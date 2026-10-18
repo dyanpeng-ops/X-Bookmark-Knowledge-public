@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import argparse
 import logging
@@ -867,8 +868,37 @@ def _cmd_links(args: argparse.Namespace, config: AppConfig) -> int:
     return EXIT_OK if stats.ok else EXIT_FAILURE
 
 
+#: 队列 #38（O-01）：慢步骤阈值默认 120s（可用 pipeline.slow_step_seconds 覆盖）
+DEFAULT_SLOW_STEP_SECONDS = 120.0
+
+
+def report_stage_timings(
+    timings: Mapping[str, float], slow_step_seconds: float = DEFAULT_SLOW_STEP_SECONDS
+) -> list[str]:
+    """输出各阶段墙钟 + 最慢阶段 + 超阈值告警；返回便于测试的行列表。"""
+
+    if not timings:
+        return []
+    total = sum(timings.values())
+    lines = ["Pipeline 耗时统计", "  stage         : seconds"]
+    for name, seconds in timings.items():
+        mark = "  ⚠️ 超阈值" if seconds > slow_step_seconds else ""
+        lines.append(f"  {name:<13} : {seconds:>8.2f}{mark}")
+    lines.append(f"  {'total':<13} : {total:>8.2f}")
+    slowest = max(timings.items(), key=lambda kv: kv[1])
+    lines.append(f"  slowest stage : {slowest[0]} ({slowest[1]:.2f}s)")
+    over = [(n, s) for n, s in timings.items() if s > slow_step_seconds]
+    if over:
+        lines.append(f"  [warn] 超过 {slow_step_seconds:.0f}s 阈值的阶段: " +
+                     "、".join(f"{n}={s:.1f}s" for n, s in over))
+    return lines
+
+
 def _cmd_pipeline(args: argparse.Namespace, config: AppConfig) -> int:
     """一键端到端全量管线：sync → media → links → process 自动闭环收敛。"""
+
+    stage_timings: dict[str, float] = {}
+    _t0 = time.perf_counter()
 
     print("=" * 60)
     print(">>> [Pipeline 1/4] 同步入库 (Sync)...")
@@ -883,6 +913,7 @@ def _cmd_pipeline(args: argparse.Namespace, config: AppConfig) -> int:
         limit=args.limit,
     )
     rc_sync = _cmd_sync(sync_args, config)
+    stage_timings["sync"] = time.perf_counter() - _t0
     if rc_sync != EXIT_OK:
         print("[fail] Pipeline 在 sync 阶段退出", file=sys.stderr)
         return rc_sync
@@ -894,7 +925,9 @@ def _cmd_pipeline(args: argparse.Namespace, config: AppConfig) -> int:
         tweet_id=None,
         dry_run=False,
     )
+    _t1 = time.perf_counter()
     _cmd_media(media_args, config)
+    stage_timings["media"] = time.perf_counter() - _t1
 
     print("\n" + "=" * 60)
     print(">>> [Pipeline 3/4] 抓取外部引用与封面 (Links)...")
@@ -905,7 +938,9 @@ def _cmd_pipeline(args: argparse.Namespace, config: AppConfig) -> int:
         force=bool(args.force_links),
         dry_run=False,
     )
+    _t2 = time.perf_counter()
     _cmd_links(links_args, config)
+    stage_timings["links"] = time.perf_counter() - _t2
 
     print("\n" + "=" * 60)
     print(">>> [Pipeline 4/4] 渲染知识库 Markdown 闭环收敛 (Process)...")
@@ -915,7 +950,9 @@ def _cmd_pipeline(args: argparse.Namespace, config: AppConfig) -> int:
         overwrite=bool(args.overwrite),
         no_status=False,
     )
+    _t3 = time.perf_counter()
     rc_process = _cmd_process(process_args, config)
+    stage_timings["process"] = time.perf_counter() - _t3
     if rc_process != EXIT_OK:
         print("[fail] Pipeline 在 process 阶段退出", file=sys.stderr)
         return rc_process
@@ -923,6 +960,16 @@ def _cmd_pipeline(args: argparse.Namespace, config: AppConfig) -> int:
     print("\n" + "=" * 60)
     print("[ok] Pipeline 运行完毕，知识库已完成闭环收敛。")
     print("=" * 60)
+    # 队列 #38：分步耗时统计 + 超阈值告警（仅在正常收敛时打印）
+    try:
+        _slow = config.section("pipeline").get("slow_step_seconds")
+    except Exception:  # noqa: BLE001
+        _slow = None
+    for _line in report_stage_timings(
+        stage_timings, float(_slow) if _slow else DEFAULT_SLOW_STEP_SECONDS
+    ):
+        print(_line)
+
     return EXIT_OK
 
 
