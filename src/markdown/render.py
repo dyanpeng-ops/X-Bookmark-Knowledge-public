@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -46,6 +47,7 @@ YEAR_MONTH_LAYOUT = "year_month"
 FRONTMATTER_KEYS: tuple[str, ...] = (
     "title",
     "tags",
+    "tags_ai",
     "posted_at",
 )
 
@@ -63,6 +65,8 @@ class _SectionContext:
     media_captions: Mapping[str, Any] | None = None
     #: 本地翻译产物：`{"text": 中文译文, "title": 中文标题}`（用户要求：英文书签翻中文）
     translation: Mapping[str, Any] | None = None
+    #: Phase 11：AI 分析（summary/insights/tags_ai）
+    ai_analysis: Any | None = None
 
 
 def _now_iso(now: Any = None) -> str:
@@ -191,29 +195,46 @@ def derive_title(
     upstream: Mapping[str, Any],
     enrichment: Mapping[str, Any] | None = None,
     link_title: str | None = None,
+    translation: Mapping[str, Any] | None = None,
 ) -> str | None:
     """给出可读标题（队列 #27 ②，用户选 A：允许**派生标签**，但绝不冒充原文标题）。
 
     优先级：
     1. 真实标题（`enrichment.articleTitle`）；
-    2. 正文**首句**（正文是真实文字时取首句，截断 40 字）；
-    3. 正文为空 / 纯链接 ⇒ **派生标签**：`<作者> 分享的链接（YYYY-MM-DD）`
+    2. 中文译文首句（若存在非空翻译，优先使用译文避免外语截断）；
+    3. 正文**首句**（正文是真实文字时取首句，截断 40 字）；
+    4. 纯链书签无可用标题时，用外链自身标题（排除通用壳标题）；
+    5. 正文为空 / 纯链接 ⇒ **派生标签**：`<作者> 分享的链接（YYYY-MM-DD）`
        —— 事实性描述（作者＋日期＋类型），不伪造文章名。
     """
 
     enrich = enrichment or {}
     real = str(enrich.get("articleTitle") or "").strip()
     if real:
-        return real
+        return html.unescape(real)
+
+    # 优先检查译文首句
+    trans = translation or {}
+    zh_text = str(trans.get("text") or "").strip()
+    if zh_text and not _looks_like_bare_link(zh_text):
+        first_zh = re.split(r"[。！？!?\n]", zh_text, maxsplit=1)[0].strip()
+        if first_zh:
+            first_zh = html.unescape(first_zh)
+            return first_zh[:40] + ("…" if len(first_zh) > 40 else "")
+
     text = str(upstream.get("text") or "").strip()
     if text and not _looks_like_bare_link(text):
         first = re.split(r"[。！？!?\n]", text, maxsplit=1)[0].strip()
         if first:
+            first = html.unescape(first)
             return first[:40] + ("…" if len(first) > 40 else "")
+
     # 队列 #30 审计更新：纯链书签无可用标题时，用**外链自身标题**（og:title/<title>）当标题
     external = str(link_title or "").strip()
     if external:
-        return external[:80]
+        clean_ext = html.unescape(external)
+        if clean_ext.lower() not in ("- youtube", "youtube", "twitter", "x", "github"):
+            return clean_ext[:80]
     author = str(upstream.get("authorName") or upstream.get("authorHandle") or "").strip()
     created = _iso_created_at(upstream) or ""
     day = created[:10] if created else ""
@@ -251,18 +272,18 @@ def date_parts(created_at: str | None) -> tuple[str, str, str]:
 _UNSAFE_FILENAME_RE = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 
 
-def sanitize_filename(title: str, max_len: int = 60) -> str:
+def sanitize_filename(title: str, max_len: int = 50) -> str:
     """把标题清洗成可用的文件名（队列 #27：按标题命名）。
 
     * 非法字符（`\\ / : * ? " < > |` 与换行/制表符）→ 空格；
-    * 连续空白折叠；去掉首尾空格与点号（避免隐藏文件/尾点问题）；
+    * 连续空白折叠；去掉首尾空格、点号与省略号（避免跨平台尾部点与特殊符问题）；
     * 超长按 ``max_len`` 截断（按字符，不切坏多字节）。
     """
 
-    cleaned = _UNSAFE_FILENAME_RE.sub(" ", str(title or "")).strip()
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    cleaned = _UNSAFE_FILENAME_RE.sub(" ", html.unescape(str(title or ""))).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .…_-")
     if len(cleaned) > max_len:
-        cleaned = cleaned[:max_len].rstrip(" .")
+        cleaned = cleaned[:max_len].rstrip(" .…_-")
     return cleaned
 
 
@@ -274,23 +295,27 @@ def relative_output_path(
 ) -> Path:
     """计算知识库内的相对路径。
 
-    * `filename_pattern` 含 `{title}` 且标题可用 ⇒ **按书签标题命名**（队列 #27 用户要求），
-      如 `别再问我拿啥下载视频了.md`；
-    * 标题为空/清洗后为空 ⇒ **回退** `YYYYMMDD-{tweet_id}.md`（不伪造文件名）。
+    * `filename_pattern` 含 `{title}` 且标题可用 ⇒ 格式化标题；
+    * 标题为空/清洗后为空 ⇒ **回退**无标题形式（如 `{yyyymmdd}-{tweet_id}.md`，不留悬空下划线）。
 
     `created_at` 必须是 ISO-8601 字符串（或 None）；年份/月份缺失时落到 `unknown/unknown/`。
     """
 
     year, month, yyyymmdd = date_parts(created_at)
     pattern = options.filename_pattern
+    if "{tweet_id}" not in pattern:
+        pattern = "{tweet_id}_" + pattern
     safe_title = sanitize_filename(title or "")
     if "{title}" in pattern:
         if safe_title:
             filename = pattern.format(
                 title=safe_title, yyyymmdd=yyyymmdd, tweet_id=tweet_id
             )
-        else:   # 无标题 ⇒ 回退日期-id（不伪造文件名）
-            filename = "{yyyymmdd}-{tweet_id}.md".format(yyyymmdd=yyyymmdd, tweet_id=tweet_id)
+        else:   # 无标题 ⇒ 回退日期-id（不留悬空符号）
+            fallback = pattern.replace("_{title}", "").replace("-{title}", "").replace("{title}", "")
+            filename = fallback.format(yyyymmdd=yyyymmdd, tweet_id=tweet_id)
+            if not filename.endswith(".md"):
+                filename += ".md"
     else:
         filename = pattern.format(yyyymmdd=yyyymmdd, tweet_id=tweet_id)
     return Path(year) / month / filename
@@ -302,7 +327,7 @@ def relative_output_path(
 def _render_section_tweet(
     upstream: Mapping[str, Any], context: "_SectionContext | None" = None
 ) -> str:
-    text = str(upstream.get("text") or "").strip()
+    text = html.unescape(str(upstream.get("text") or "")).strip()
     if not text:
         body = "> （本条没有可展示的文本）"
     else:
@@ -380,6 +405,41 @@ def _render_section_media(
     return "\n".join(blocks).rstrip()
 
 
+#: 单行正文的最大长度（超过则在句末断开，避免 Obsidian 显示成一坨"二进制"观感）。
+MAX_LINE_CHARS = 120
+
+
+def wrap_long_text(text: str, width: int = MAX_LINE_CHARS) -> str:
+    """把无换行的长文本按**句末**断行（中文倾向，兼容英文句号）；不改内容语义。"""
+
+    import re as _re
+
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    sentences = _re.split(r"(?<=[。！？!?；;\n])", raw)
+    lines: list[str] = []
+    current = ""
+    for sentence in sentences:
+        piece = sentence.strip()
+        if not piece:
+            continue
+        if not current:
+            current = piece
+        elif len(current) + len(piece) <= width:
+            current += piece
+        else:
+            lines.append(current)
+            current = piece
+        # 单句本身超长 ⇒ 硬切
+        while len(current) > width * 3:
+            lines.append(current[: width * 3])
+            current = current[width * 3:]
+    if current:
+        lines.append(current)
+    return "\n\n".join(lines)
+
+
 def _render_section_article(enrichment: Mapping[str, Any] | None) -> str:
     if not enrichment:
         return "_未展开文章_"
@@ -390,7 +450,7 @@ def _render_section_article(enrichment: Mapping[str, Any] | None) -> str:
     parts: list[str] = []
     if title:
         parts.append(f"## 文章标题：{_md_escape(title)}")
-    parts.append(_md_escape(body))
+    parts.append(wrap_long_text(_md_escape(body)))     # 超长单行按句末断行（用户反馈"像二进制"）
     return "\n\n".join(parts)
 
 
@@ -426,12 +486,22 @@ def _render_section_external_links(
     未跑 `links` 时 Markdown 不会凭空变化。
     """
 
-    links = [str(url) for url in (upstream.get("links") or ()) if str(url).strip()]
-    if not links:
-        return "_无外链_"
+    raw_links = [str(url) for url in (upstream.get("links") or ()) if str(url).strip()]
     details = link_details or {}
+    for url in details:
+        if url not in raw_links:
+            raw_links.append(url)
+    text = upstream.get("text") or ""
+    if text:
+        for u in re.findall(r"https?://[^\s<>\"'，。；！？）\]\}]+", text):
+            cleaned = u.rstrip(".,;!?。，！？；:）)］]｝}>\"'”’…")
+            if cleaned and cleaned not in raw_links:
+                raw_links.append(cleaned)
+
+    if not raw_links:
+        return "_无外链_"
     seen: list[str] = []
-    for url in links:
+    for url in raw_links:
         if url not in seen:
             seen.append(url)
 
@@ -439,7 +509,7 @@ def _render_section_external_links(
     for url in seen:
         detail = details.get(url)
         info: Mapping[str, Any] = detail if isinstance(detail, Mapping) else {}
-        title = str(info.get("title") or "").strip()
+        title = html.unescape(str(info.get("title") or "")).strip()
         if not title and _X_INTERNAL_RE.match(url):
             title = _x_link_label(url, upstream)      # X 站内链：派生卡片（不伪造标题）
         blocks.append(f"- [{_escape_link_text(title)}]({url})" if title else f"- {url}")
@@ -515,15 +585,25 @@ def _render_section_thread(
         header.append(f"`{str(quoted_id)}`")
     if header:
         lines.append("- 引用：" + " ".join(header))
-    text = str(quoted.get("text") or "").strip()
+    text = html.unescape(str(quoted.get("text") or "")).strip()
     if text:
         lines.extend(f"> {line}" for line in _md_escape(text).split("\n"))
     return "\n".join(lines) if lines else "_无引用推文内容_"
 
 
-def _render_section_ai_analysis() -> str:
-    """占位段：AI 增强在 Phase 11 实现（默认关闭），本阶段不写入任何分析内容。"""
+def _render_section_ai_analysis(analysis: Any | None = None) -> str:
+    """Phase 11：有 AI 分析结果就渲染三段（要点/建议/扩展标签）；否则保留占位。
 
+    失败/未启用时**保留占位文案**，绝不伪造分析内容。
+    """
+
+    if analysis is not None:
+        try:
+            body = analysis.to_markdown()
+        except Exception:  # noqa: BLE001 - 分析对象异常不该中断渲染
+            body = ""
+        if body:
+            return body
     return "_预留段：AI 分析将于 Phase 11 生成（当前不含任何分析内容）_"
 
 
@@ -541,7 +621,7 @@ _SECTION_RENDERERS: dict[str, Any] = {
     "article": lambda u, e, c: _render_section_article(e),
     "external_links": lambda u, e, c: _render_section_external_links(u, c.link_details),
     "metadata": lambda u, e, c: _render_section_metadata(u, e),
-    "ai_analysis": lambda u, e, c: _render_section_ai_analysis(),
+    "ai_analysis": lambda u, e, c: _render_section_ai_analysis(getattr(c, "ai_analysis", None)),
     "source": lambda u, e, c: _render_section_source(u),
 }
 
@@ -556,6 +636,7 @@ def render_markdown(
     media_captions: Mapping[str, Any] | None = None,
     translation: Mapping[str, Any] | None = None,
     tags: "Sequence[str] | None" = None,
+    ai_analysis: Any | None = None,
 ) -> str:
     """渲染整份 Markdown 文本（含可选 frontmatter + 各段落）。
 
@@ -572,6 +653,7 @@ def render_markdown(
     context = _SectionContext(
         media_files=media_files, link_details=link_details, media_captions=media_captions,
         translation=translation,
+        ai_analysis=ai_analysis,
     )
     parts: list[str] = []
     zh_title = str((translation or {}).get("title") or "").strip()
@@ -580,12 +662,15 @@ def render_markdown(
         if zh_title:
             frontmatter["title"] = zh_title
         if tags:
-            frontmatter["tags"] = list(tags)[:3]     # 队列 #28：预设标签，1–3 个
+            frontmatter["tags"] = list(tags)[:3]        # 队列 #28：预设标签，1–3 个
             # 用户要求：**投资理财**类书签额外带「推文时间」属性（便于按时间复盘行情）
             if "投资理财" in list(tags) or "美股QDII" in list(tags) or "宏观经济" in list(tags):
                 posted = _iso_created_at(upstream)
                 if posted:
                     frontmatter["posted_at"] = posted
+        _tags_ai = getattr(ai_analysis, "tags_ai", None) if ai_analysis is not None else None
+        if _tags_ai:
+            frontmatter["tags_ai"] = list(_tags_ai)[:3]  # Phase 11：扩展标签单独字段（不动预设 tags）
         lines = ["---"]
         for key in FRONTMATTER_KEYS:
             if key in frontmatter:

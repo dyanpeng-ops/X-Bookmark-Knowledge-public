@@ -61,6 +61,7 @@ class MarkdownWriter:
         media_link_mode: str = "note-relative",
         translator: Any | None = None,
         tagger: Any | None = None,
+        analyzer: Any | None = None,
     ) -> None:
         """`loader` 接受 tweet_id、返回原始归档 dict（含 `upstream`/`enrichment`）。
 
@@ -96,6 +97,8 @@ class MarkdownWriter:
         self._translator = translator
         #: 可选：本地标签分类器（队列 #28）。None = 不分类（行为不变）。
         self._tagger = tagger
+        #: Phase 11：可选 AI 分析器（AIAnalysisStore）。None = 保留占位。
+        self._analyzer = analyzer
 
     def _resolve_loader(self) -> Callable[[str], Mapping[str, Any]]:
         if self._loader is not None:
@@ -154,8 +157,14 @@ class MarkdownWriter:
         created_at = _iso_from_upstream(upstream)
         from .render import derive_title
 
+        translation = self._resolve_translation(upstream, enrichment)
+        title = derive_title(
+            upstream,
+            enrichment,
+            translation=translation,
+        )
         rel = relative_path_for(
-            tweet_id, created_at, self._options, title=derive_title(upstream, enrichment)
+            tweet_id, created_at, self._options, title=title
         )
         target = self._knowledge_dir / rel
         # 重名保护：不同书签可能得到同一标题 ⇒ 追加 tweet_id 区分
@@ -169,8 +178,9 @@ class MarkdownWriter:
             media_files=self._resolve_media_files(tweet_id, target),
             link_details=self._resolve_link_details(tweet_id, target),
             media_captions=self._resolve_media_captions(tweet_id),
-            translation=self._resolve_translation(upstream, enrichment),
+            translation=translation,
             tags=self._resolve_tags(upstream, enrichment),
+            ai_analysis=self._resolve_ai_analysis(upstream, enrichment),
         )
         if target.exists():
             existing = target.read_text(encoding="utf-8")
@@ -223,21 +233,37 @@ class MarkdownWriter:
         return f"/status/{tweet_id}" in text or f"会话 ID：`{tweet_id}`" in text
 
     def _remove_stale_siblings(self, tweet_id: str, keep: Path) -> int:
-        """按标题重命名后，删除同一目录下旧的 `*-{tweet_id}.md`（队列 #27）。"""
+        """删除同一目录下属于该 tweet_id 但不是当前 target 的旧 Markdown 文件。"""
 
         removed = 0
         try:
-            for old in keep.parent.glob(f"*-{tweet_id}.md"):
-                if old == keep or not old.is_file():
+            candidates = set(keep.parent.glob(f"*{tweet_id}*.md"))
+            for md_file in keep.parent.glob("*.md"):
+                if md_file == keep or not md_file.is_file():
                     continue
-                if not self._target_belongs_to(old, tweet_id):
-                    continue            # 不是这条书签的文件，绝不误删
-                old.unlink()
-                removed += 1
-                logger.info("removed stale markdown after rename: %s", old.name)
+                if md_file in candidates or self._target_belongs_to(md_file, tweet_id):
+                    md_file.unlink()
+                    removed += 1
+                    logger.info("removed stale markdown: %s", md_file.name)
         except OSError as exc:  # noqa: BLE001
             logger.warning("failed to remove stale markdown for %s: %s", tweet_id, exc)
         return removed
+
+    def _resolve_ai_analysis(
+        self, upstream: Mapping[str, Any], enrichment: Mapping[str, Any] | None
+    ) -> Any | None:
+        """Phase 11：对正文做 AI 增强分析（本地 Saluki）；未启用/失败返回 None（保留占位）。"""
+
+        if self._analyzer is None:
+            return None
+        from .render import derive_title
+
+        parts = [str(upstream.get("text") or ""), derive_title(upstream, enrichment) or ""]
+        try:
+            return self._analyzer.analyze("\n".join(p for p in parts if p))
+        except Exception as exc:  # noqa: BLE001 - 分析失败不该中断渲染
+            logger.warning("ai analysis failed: %s", exc)
+            return None
 
     def _resolve_tags(
         self, upstream: Mapping[str, Any], enrichment: Mapping[str, Any] | None

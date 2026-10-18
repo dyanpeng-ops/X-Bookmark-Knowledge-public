@@ -206,6 +206,14 @@ class RenderTests(unittest.TestCase):
         self.assertIn("`1933333333333333333`", text)
         self.assertIn("> 来自 JSONL 的引用。", text)
 
+    def test_thread_section_unescapes_html_entities(self):
+        text = render(
+            {"quotedTweet": {"id": "1", "authorHandle": "alice", "text": "100% free &amp; open source <fun>"}},
+            enrich=None,
+        )
+        self.assertIn("100% free & open source <fun>", text)
+        self.assertNotIn("&amp;", text)
+
     def test_thread_section_prefers_enrichment_over_jsonl(self):
         """两处都有时以**富化**为准（数据更全），不得因回退而改变既有优先级。"""
 
@@ -238,6 +246,13 @@ class PathTests(unittest.TestCase):
             "123", "2026-09-14T01:24:21Z", RenderOptions(filename_pattern="note-{tweet_id}.md")
         )
         self.assertEqual(rel, Path("2026") / "09" / "note-123.md")
+
+    def test_pattern_without_tweet_id_is_anchored(self):
+        """若配置的 pattern 缺失 {tweet_id}，自动前缀 {tweet_id}_ 防止主键漂移与孤儿文件。"""
+        rel = relative_output_path(
+            "123", "2026-09-14T01:24:21Z", RenderOptions(filename_pattern="{title}.md"), title="Hello World"
+        )
+        self.assertEqual(rel, Path("2026") / "09" / "123_Hello World.md")
 
 
 class WriterTests(unittest.TestCase):
@@ -573,3 +588,50 @@ class InvestTagTimePropertyTests(unittest.TestCase):
         from src.markdown.render import RenderOptions, render_markdown
         text = render_markdown(self.UP, None, RenderOptions(), tags=["AI工具"])
         self.assertNotIn("posted_at:", text)
+
+
+class OptionAPatternAndUnescapeTests(unittest.TestCase):
+    def test_html_unescape_in_title_and_text(self):
+        from src.markdown.render import RenderOptions, derive_title, render_markdown, sanitize_filename
+        up = {"tweetId": "1", "text": "Tech Stack &amp; code\nfoo &lt; bar", "media": [], "links": []}
+        title = derive_title(up)
+        self.assertEqual(title, "Tech Stack & code")
+        safe_name = sanitize_filename(title)
+        self.assertEqual(safe_name, "Tech Stack & code")
+        md = render_markdown(up, None, RenderOptions())
+        self.assertIn("Tech Stack & code", md)
+        self.assertNotIn("&amp;", md)
+
+    def test_relative_output_path_option_a(self):
+        from src.markdown.render import RenderOptions, relative_output_path
+        opts = RenderOptions(filename_pattern="{yyyymmdd}-{tweet_id}_{title}.md")
+        path = relative_output_path("12345", "2026-10-15T00:00:00Z", opts, title="My Awesome Note")
+        self.assertEqual(str(path), "2026/10/20261015-12345_My Awesome Note.md")
+
+    def test_relative_output_path_option_a_fallback_when_empty_title(self):
+        from src.markdown.render import RenderOptions, relative_output_path
+        opts = RenderOptions(filename_pattern="{yyyymmdd}-{tweet_id}_{title}.md")
+        path = relative_output_path("12345", "2026-10-15T00:00:00Z", opts, title="")
+        self.assertEqual(str(path), "2026/10/20261015-12345.md")
+
+
+class AIAnalysisRenderTests(unittest.TestCase):
+    """Phase 11：有分析结果渲染三段；无结果保留占位（不伪造）。"""
+
+    UP = {"tweetId": "1", "text": "用 AI 工具提升效率的办法", "media": [], "links": []}
+
+    def test_analysis_sections_and_tags_ai(self):
+        from src.media.ai_analysis import AIAnalysis
+        from src.markdown.render import RenderOptions, render_markdown
+        a = AIAnalysis(summary="介绍了三款效率工具", insights=["先试用再付费"], tags_ai=["Notion"])
+        out = render_markdown(self.UP, None, RenderOptions(), tags=["AI工具"], ai_analysis=a)
+        self.assertIn("**要点**：介绍了三款效率工具", out)
+        self.assertIn("**建议**：先试用再付费", out)
+        self.assertIn('tags_ai: ["Notion"]', out)
+        self.assertIn('tags: ["AI工具"]', out)          # 预设标签不被污染
+
+    def test_no_analysis_keeps_placeholder(self):
+        from src.markdown.render import RenderOptions, render_markdown
+        out = render_markdown(self.UP, None, RenderOptions())
+        self.assertIn("_预留段：AI 分析将于 Phase 11 生成", out)
+        self.assertNotIn("tags_ai:", out)

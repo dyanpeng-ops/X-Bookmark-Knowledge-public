@@ -110,6 +110,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="只抓取并报告结果，不写文件、不写数据库",
     )
 
+    pipeline = sub.add_parser(
+        "pipeline",
+        help="一键端到端全量管线（sync → media → links → process 自动闭环收敛）",
+    )
+    pipeline.add_argument("--skip-collect", action="store_true", help="跳过上游采集，只处理本地已有数据")
+    pipeline.add_argument("--overwrite", action="store_true", help="允许覆盖并重绘已存在的 Markdown")
+    pipeline.add_argument("--force-links", action="store_true", help="强制重新抓取所有外链")
+    pipeline.add_argument("--limit", type=int, help="只处理前 N 条（演练用）")
+
     normalize = sub.add_parser(
         "normalize",
         help="把上游原始数据规范化为 Canonical JSON（默认只演练）",
@@ -194,6 +203,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "process": _cmd_process,
             "media": _cmd_media,
             "links": _cmd_links,
+            "pipeline": _cmd_pipeline,
             "status": _cmd_status,
             "doctor": _cmd_doctor,
             "rebuild-index": _cmd_rebuild_index,
@@ -361,6 +371,10 @@ def _cmd_process(args: argparse.Namespace, config: AppConfig) -> int:
         conn = connect(config.paths.state_db_path)
         try:
             repo = BookmarkRepository(conn)
+            current = repo.get_bookmark(tweet_id)
+            if current is not None and current.status in ("NEW", "FAILED") and status == "PROCESSED":
+                # 状态自愈：NEW/FAILED 状态在直接进入 PROCESSED 前先恢复推进为 COLLECTED
+                repo.set_status(tweet_id, "COLLECTED", error_message=None)
             repo.set_status(tweet_id, status, error_message=None)
             if markdown_path:
                 repo.upsert_bookmark(
@@ -400,6 +414,17 @@ def _cmd_process(args: argparse.Namespace, config: AppConfig) -> int:
 
     tagger = TagClassifier() if translate_enabled else None   # 测试用同一开关隔离真实模型
 
+    # 队列 #37：Phase 11 AI 增强分析（默认关闭；XBK_AI_ANALYSIS=1 开启，测试保持隔离）
+    analyzer = None
+    if translate_enabled and os.environ.get("XBK_AI_ANALYSIS", "0").strip().lower() in ("1", "true", "on", "yes"):
+        from src.media.ai_analysis import AIAnalysisStore
+        from src.media.tagging import PRESET_TAGS
+
+        analyzer = AIAnalysisStore(
+            store_path=config.project_root / "data" / "state" / "ai-analysis.json",
+            preset_tags=PRESET_TAGS,
+        )
+
     writer = MarkdownWriter(
         knowledge_dir,
         raw_dir=config.paths.raw_dir,
@@ -410,9 +435,15 @@ def _cmd_process(args: argparse.Namespace, config: AppConfig) -> int:
         media_captions=media_captions.get,
         translator=translator,
         tagger=tagger,
+        analyzer=analyzer,
         media_link_mode=str(section.get("media_link_mode") or "note-relative"),
     )
     stats = writer.run(tweet_ids)
+    if analyzer is not None:
+        try:
+            analyzer.save()
+        except OSError as exc:  # noqa: BLE001
+            logger.warning("failed to persist ai analysis: %s", exc)
     if translator is not None:
         try:
             translator.save()
@@ -834,6 +865,65 @@ def _cmd_links(args: argparse.Namespace, config: AppConfig) -> int:
         logger.warning("link cover fill skipped: %s", exc)
 
     return EXIT_OK if stats.ok else EXIT_FAILURE
+
+
+def _cmd_pipeline(args: argparse.Namespace, config: AppConfig) -> int:
+    """一键端到端全量管线：sync → media → links → process 自动闭环收敛。"""
+
+    print("=" * 60)
+    print(">>> [Pipeline 1/4] 同步入库 (Sync)...")
+    print("=" * 60)
+    sync_args = argparse.Namespace(
+        skip_collect=bool(args.skip_collect),
+        continue_previous=False,
+        rebuild=False,
+        gaps=False,
+        media=False,
+        max_pages=None,
+        limit=args.limit,
+    )
+    rc_sync = _cmd_sync(sync_args, config)
+    if rc_sync != EXIT_OK:
+        print("[fail] Pipeline 在 sync 阶段退出", file=sys.stderr)
+        return rc_sync
+
+    print("\n" + "=" * 60)
+    print(">>> [Pipeline 2/4] 本地化媒体 (Media)...")
+    print("=" * 60)
+    media_args = argparse.Namespace(
+        tweet_id=None,
+        dry_run=False,
+    )
+    _cmd_media(media_args, config)
+
+    print("\n" + "=" * 60)
+    print(">>> [Pipeline 3/4] 抓取外部引用与封面 (Links)...")
+    print("=" * 60)
+    links_args = argparse.Namespace(
+        tweet_id=None,
+        limit=args.limit,
+        force=bool(args.force_links),
+        dry_run=False,
+    )
+    _cmd_links(links_args, config)
+
+    print("\n" + "=" * 60)
+    print(">>> [Pipeline 4/4] 渲染知识库 Markdown 闭环收敛 (Process)...")
+    print("=" * 60)
+    process_args = argparse.Namespace(
+        tweet_id=None,
+        overwrite=bool(args.overwrite),
+        no_status=False,
+    )
+    rc_process = _cmd_process(process_args, config)
+    if rc_process != EXIT_OK:
+        print("[fail] Pipeline 在 process 阶段退出", file=sys.stderr)
+        return rc_process
+
+    print("\n" + "=" * 60)
+    print("[ok] Pipeline 运行完毕，知识库已完成闭环收敛。")
+    print("=" * 60)
+    return EXIT_OK
 
 
 def _upstream_media_index(adapter: FieldTheoryAdapter) -> dict[str, str]:
